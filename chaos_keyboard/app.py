@@ -4,9 +4,11 @@ from __future__ import annotations
 from typing import Tuple
 
 from . import DEFAULT_MODE, ensure_sim_only_mode
+from .bus import EventBus, SystemAction
 
 try:  # pragma: no cover - import side effect
     from PySide6.QtCore import Qt
+    from PySide6.QtGui import QKeyEvent
     from PySide6.QtWidgets import (
         QApplication,
         QFrame,
@@ -98,12 +100,13 @@ class ModeStatusBar(QStatusBar):
 class MainWindow(QMainWindow):
     """Primary application window for the Chaos Keyboard UI."""
 
-    def __init__(self, mode: str = DEFAULT_MODE) -> None:
+    def __init__(self, mode: str = DEFAULT_MODE, event_bus: EventBus | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Chaos Keyboard")
         self.resize(1024, 768)
 
         self._mode = ensure_sim_only_mode(mode)
+        self._event_bus = event_bus or EventBus()
 
         central = QWidget(self)
         central_layout = QVBoxLayout(central)
@@ -128,6 +131,12 @@ class MainWindow(QMainWindow):
 
         return self._mode
 
+    @property
+    def event_bus(self) -> EventBus:
+        """Expose the window's event bus for subscriber registration."""
+
+        return self._event_bus
+
     def set_mode(self, mode: str) -> None:
         """Set the runtime mode and refresh the status bar."""
 
@@ -136,15 +145,34 @@ class MainWindow(QMainWindow):
         if isinstance(status, ModeStatusBar):
             status.update_mode(self._mode)
 
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # pragma: no cover - Qt integration
+        """Publish key press events to the event bus before default handling."""
 
-def create_application(mode: str | None = None) -> Tuple[QApplication, MainWindow]:
+        if self._event_bus is not None:
+            action = SystemAction(
+                name="key_press",
+                payload={
+                    "key": event.key(),
+                    "text": event.text(),
+                    "modifiers": int(event.modifiers()),
+                },
+            )
+            self._event_bus.publish(action)
+
+        super().keyPressEvent(event)
+
+
+def create_application(
+    mode: str | None = None, event_bus: EventBus | None = None
+) -> Tuple[QApplication, MainWindow]:
     """Create the Qt application and the main window."""
 
     app = QApplication.instance()
     if app is None:
         app = QApplication(["ChaosKeyboard"])
 
-    window = MainWindow(mode or DEFAULT_MODE)
+    bus = event_bus or EventBus()
+    window = MainWindow(mode or DEFAULT_MODE, event_bus=bus)
     return app, window
 
 
