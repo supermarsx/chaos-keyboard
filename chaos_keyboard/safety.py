@@ -1,6 +1,7 @@
 """Safety policy and runtime mode helpers for Chaos Keyboard."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from threading import Event, Lock
@@ -20,6 +21,9 @@ __all__ = [
     "SafetyContext",
     "normalize_mode",
 ]
+
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeMode(str, Enum):
@@ -140,7 +144,10 @@ class SafetyWatchdog:
         with self._lock:
             callbacks: Sequence[Callable[[], None]] = list(self._callbacks)
         for callback in callbacks:
-            callback()
+            try:
+                callback()
+            except Exception:  # noqa: BLE001 - we must continue stopping all effects
+                logger.exception("Safety panic callback %r raised an exception", callback)
 
     def wait_for_panic(self, timeout: float | None = None) -> bool:
         """Block until the panic button is triggered or ``timeout`` elapses."""

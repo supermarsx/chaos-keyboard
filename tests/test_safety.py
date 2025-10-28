@@ -1,6 +1,7 @@
 """Unit tests covering the Chaos Keyboard safety policies."""
 from __future__ import annotations
 
+import logging
 import sys
 import time
 from pathlib import Path
@@ -72,3 +73,23 @@ def test_panic_stop_completes_within_200ms() -> None:
 
     assert callbacks == ["fired"]
     assert elapsed <= 0.2
+
+
+def test_panic_runs_all_callbacks_even_when_some_raise(caplog: pytest.LogCaptureFixture) -> None:
+    watchdog = SafetyWatchdog()
+    callbacks: list[str] = []
+
+    watchdog.register(lambda: callbacks.append("first"))
+
+    def faulty_callback() -> None:
+        callbacks.append("faulty")
+        raise RuntimeError("boom")
+
+    watchdog.register(faulty_callback)
+    watchdog.register(lambda: callbacks.append("second"))
+
+    with caplog.at_level(logging.ERROR):
+        watchdog.panic()
+
+    assert callbacks == ["first", "faulty", "second"]
+    assert any("panic callback" in message for message in caplog.messages)
