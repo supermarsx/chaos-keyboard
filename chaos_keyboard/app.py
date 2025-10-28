@@ -5,10 +5,12 @@ from typing import Tuple
 
 from . import DEFAULT_MODE, ensure_sim_only_mode
 from .bus import EventBus, SystemAction
+from .effects import EffectController
+from .safety import SafetyContext
 
 try:  # pragma: no cover - import side effect
     from PySide6.QtCore import Qt
-    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtGui import QCloseEvent, QKeyEvent
     from PySide6.QtWidgets import (
         QApplication,
         QFrame,
@@ -107,6 +109,9 @@ class MainWindow(QMainWindow):
 
         self._mode = ensure_sim_only_mode(mode)
         self._event_bus = event_bus or EventBus()
+        self._safety_context = SafetyContext(self._mode)
+        self._effects = EffectController(self._safety_context, self._event_bus)
+        self._bind_default_effects()
 
         central = QWidget(self)
         central_layout = QVBoxLayout(central)
@@ -141,6 +146,10 @@ class MainWindow(QMainWindow):
         """Set the runtime mode and refresh the status bar."""
 
         self._mode = ensure_sim_only_mode(mode)
+        self._effects.close()
+        self._safety_context = SafetyContext(self._mode)
+        self._effects = EffectController(self._safety_context, self._event_bus)
+        self._bind_default_effects()
         status = self.statusBar()
         if isinstance(status, ModeStatusBar):
             status.update_mode(self._mode)
@@ -160,6 +169,20 @@ class MainWindow(QMainWindow):
             self._event_bus.publish(action)
 
         super().keyPressEvent(event)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # pragma: no cover - Qt integration
+        """Ensure effects are stopped before closing the window."""
+
+        self._effects.close()
+        super().closeEvent(event)
+
+    def _bind_default_effects(self) -> None:
+        """Bind the default keyboard shortcuts to effects."""
+
+        self._effects.bind_key(Qt.Key_F1, "fake_bsod")
+        self._effects.bind_key(Qt.Key_F3, "popup_storm")
+        self._effects.bind_key(Qt.Key_F5, "mock_keylogger")
+        self._effects.bind_key(Qt.Key_F6, "matrix_rain")
 
 
 def create_application(
