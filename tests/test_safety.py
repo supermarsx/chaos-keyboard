@@ -93,3 +93,24 @@ def test_panic_runs_all_callbacks_even_when_some_raise(caplog: pytest.LogCapture
 
     assert callbacks == ["first", "faulty", "second"]
     assert any("panic callback" in message for message in caplog.messages)
+
+
+def test_wait_for_panic_accounts_for_callback_runtime() -> None:
+    watchdog = SafetyWatchdog(max_stop_duration=0.05)
+
+    def slow_callback() -> None:
+        time.sleep(0.1)
+
+    watchdog.register(slow_callback)
+
+    thread = Thread(target=watchdog.panic)
+    thread.start()
+
+    start = perf_counter()
+    assert not watchdog.wait_for_panic(timeout=0.2)
+    elapsed = perf_counter() - start
+
+    thread.join()
+
+    # The watchdog should report that the panic exceeded its configured duration.
+    assert elapsed >= 0.05

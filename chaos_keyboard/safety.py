@@ -111,6 +111,8 @@ class SafetyWatchdog:
     def __init__(self, *, max_stop_duration: float = 0.2) -> None:
         self._max_stop_duration = max_stop_duration
         self._panic_event = Event()
+        self._panic_complete = Event()
+        self._panic_elapsed: float | None = None
         self._callbacks: MutableSequence[Callable[[], None]] = []
         self._lock = Lock()
 
@@ -139,31 +141,44 @@ class SafetyWatchdog:
         """Trigger the panic button, stopping all effects immediately."""
 
         if self._panic_event.is_set():
+            # Ensure callers block until the initial panic completes.
+            self._panic_complete.wait(self._max_stop_duration)
             return
         self._panic_event.set()
         with self._lock:
             callbacks: Sequence[Callable[[], None]] = list(self._callbacks)
-        for callback in callbacks:
-            try:
-                callback()
-            except Exception:  # noqa: BLE001 - we must continue stopping all effects
-                logger.exception("Safety panic callback %r raised an exception", callback)
+        start = perf_counter()
+        try:
+            for callback in callbacks:
+                try:
+                    callback()
+                except Exception:  # noqa: BLE001 - continue stopping all effects
+                    logger.exception(
+                        "Safety panic callback %r raised an exception", callback
+                    )
+        finally:
+            self._panic_elapsed = perf_counter() - start
+            self._panic_complete.set()
 
     def wait_for_panic(self, timeout: float | None = None) -> bool:
         """Block until the panic button is triggered or ``timeout`` elapses."""
 
         deadline = timeout if timeout is not None else self._max_stop_duration
         start = perf_counter()
-        fired = self._panic_event.wait(deadline)
+        fired = self._panic_complete.wait(deadline)
         if not fired:
             return False
         elapsed = perf_counter() - start
-        return elapsed <= self._max_stop_duration + 1e-6
+        # Fall back to measured elapsed time if panic completed faster than wait duration.
+        panic_elapsed = self._panic_elapsed if self._panic_elapsed is not None else elapsed
+        return panic_elapsed <= self._max_stop_duration + 1e-6
 
     def reset(self) -> None:
         """Clear the panic event; primarily used for testing."""
 
         self._panic_event.clear()
+        self._panic_complete.clear()
+        self._panic_elapsed = None
 
 
 _MODE_CAPABILITIES: dict[RuntimeMode, FrozenSet[str]] = {
