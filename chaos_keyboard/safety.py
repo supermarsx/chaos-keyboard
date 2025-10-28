@@ -140,13 +140,20 @@ class SafetyWatchdog:
     def panic(self) -> None:
         """Trigger the panic button, stopping all effects immediately."""
 
-        if self._panic_event.is_set():
+        callbacks: Sequence[Callable[[], None]] | None = None
+        with self._lock:
+            if self._panic_event.is_set():
+                should_wait = True
+            else:
+                should_wait = False
+                self._panic_event.set()
+                callbacks = list(self._callbacks)
+                self._panic_complete.clear()
+        if should_wait:
             # Ensure callers block until the initial panic completes.
             self._panic_complete.wait(self._max_stop_duration)
             return
-        self._panic_event.set()
-        with self._lock:
-            callbacks: Sequence[Callable[[], None]] = list(self._callbacks)
+        assert callbacks is not None  # Satisfy the type-checker; set when not waiting.
         start = perf_counter()
         try:
             for callback in callbacks:
