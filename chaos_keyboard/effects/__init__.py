@@ -205,7 +205,11 @@ class EffectController:
     def _normalise_key(key: object) -> str:
         if isinstance(key, str):
             return key.strip().upper()
-        return str(key)
+        try:
+            numeric = int(key)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return str(key)
+        return str(numeric)
 
 
 # Import built-in effects so they register with the global registry.
