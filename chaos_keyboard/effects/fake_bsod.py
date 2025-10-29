@@ -47,6 +47,8 @@ class FakeBSODEffect:
         return "running" if self._active else "idle"
 
 
-@register_effect(FakeBSODEffect.name)
+@register_effect(
+    FakeBSODEffect.name, capabilities=FakeBSODEffect.capabilities
+)
 def _factory(context: SafetyContext, bus: EventBus) -> Effect:
     return FakeBSODEffect(context=context, bus=bus)

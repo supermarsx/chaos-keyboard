@@ -53,6 +53,8 @@ class PopupStormEffect:
         return f"running (burst {self._count})" if self._active else "idle"
 
 
-@register_effect(PopupStormEffect.name)
+@register_effect(
+    PopupStormEffect.name, capabilities=PopupStormEffect.capabilities
+)
 def _factory(context: SafetyContext, bus: EventBus) -> Effect:
     return PopupStormEffect(context=context, bus=bus)

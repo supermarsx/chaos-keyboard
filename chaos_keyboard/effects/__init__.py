@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, FrozenSet, Protocol, Sequence
+from typing import Callable, Dict, FrozenSet, Iterable, Protocol, Sequence
 
 from ..bus import EffectAction, EventBus, SystemAction
 from ..safety import CapabilityNotAllowed, SafetyContext
@@ -41,19 +41,29 @@ class EffectRegistry:
     """Registry of available effect factories."""
 
     _factories: Dict[str, EffectFactory]
+    _capabilities: Dict[str, FrozenSet[str]]
 
-    def register(self, name: str, factory: EffectFactory) -> None:
+    def register(
+        self,
+        name: str,
+        factory: EffectFactory,
+        *,
+        capabilities: Iterable[str] | None = None,
+    ) -> None:
         """Register a factory for the given effect name."""
 
         key = name.strip().lower()
         if key in self._factories:
             raise ValueError(f"Effect '{name}' is already registered")
         self._factories[key] = factory
+        self._capabilities[key] = self._normalise_capabilities(capabilities)
 
     def unregister(self, name: str) -> None:
         """Remove a previously registered effect factory."""
 
-        self._factories.pop(name.strip().lower(), None)
+        key = name.strip().lower()
+        self._factories.pop(key, None)
+        self._capabilities.pop(key, None)
 
     def load(self, name: str, context: SafetyContext, bus: EventBus) -> Effect:
         """Instantiate the named effect."""
@@ -65,20 +75,43 @@ class EffectRegistry:
             raise KeyError(f"Unknown effect '{name}'") from exc
         return factory(context, bus)
 
+    def capabilities(self, name: str) -> FrozenSet[str]:
+        """Return the declared capabilities for ``name``."""
+
+        key = name.strip().lower()
+        try:
+            return self._capabilities[key]
+        except KeyError as exc:
+            raise KeyError(f"Unknown effect '{name}'") from exc
+
+    @staticmethod
+    def _normalise_capabilities(
+        capabilities: Iterable[str] | None,
+    ) -> FrozenSet[str]:
+        if capabilities is None:
+            return frozenset()
+        if isinstance(capabilities, str):
+            raise TypeError(
+                "Capabilities must be an iterable of strings, not a single string."
+            )
+        return frozenset(str(capability).strip().lower() for capability in capabilities)
+
     def names(self) -> Sequence[str]:
         """Return a sorted sequence of registered effect names."""
 
         return tuple(sorted(self._factories))
 
 
-registry = EffectRegistry(_factories={})
+registry = EffectRegistry(_factories={}, _capabilities={})
 
 
-def register_effect(name: str) -> Callable[[EffectFactory], EffectFactory]:
+def register_effect(
+    name: str, *, capabilities: Iterable[str] | None = None
+) -> Callable[[EffectFactory], EffectFactory]:
     """Decorator registering an effect factory under ``name``."""
 
     def decorator(factory: EffectFactory) -> EffectFactory:
-        registry.register(name, factory)
+        registry.register(name, factory, capabilities=capabilities)
         return factory
 
     return decorator
@@ -128,15 +161,13 @@ class EffectController:
         if key in self._active:
             return
         effect = self._instances.get(key)
+        required_capabilities = (
+            registry.capabilities(key) if effect is None else effect.capabilities
+        )
+        self._context.require_capabilities(required_capabilities)
         if effect is None:
             effect = registry.load(key, self._context, self._bus)
             self._instances[key] = effect
-        try:
-            self._context.require_capabilities(effect.capabilities)
-        except CapabilityNotAllowed:
-            if self._instances.get(key) is effect:
-                self._instances.pop(key, None)
-            raise
         effect.start()
         self._active.add(key)
         origin = source if source is not None else ""

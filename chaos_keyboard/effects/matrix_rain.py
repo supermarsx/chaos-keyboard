@@ -61,6 +61,8 @@ class MatrixRainEffect:
         )
 
 
-@register_effect(MatrixRainEffect.name)
+@register_effect(
+    MatrixRainEffect.name, capabilities=MatrixRainEffect.capabilities
+)
 def _factory(context: SafetyContext, bus: EventBus) -> Effect:
     return MatrixRainEffect(context=context, bus=bus)

@@ -37,7 +37,7 @@ def test_capability_enforcement_blocks_system_effect(
 ) -> None:
     ctrl, _, _ = controller
 
-    @register_effect("restricted_system")
+    @register_effect("restricted_system", capabilities={"system"})
     def _factory(context: SafetyContext, bus: EventBus):  # type: ignore[override]
         class RestrictedEffect:
             name = "restricted_system"

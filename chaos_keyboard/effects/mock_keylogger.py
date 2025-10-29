@@ -69,6 +69,8 @@ class MockKeyloggerEffect:
         )
 
 
-@register_effect(MockKeyloggerEffect.name)
+@register_effect(
+    MockKeyloggerEffect.name, capabilities=MockKeyloggerEffect.capabilities
+)
 def _factory(context: SafetyContext, bus: EventBus) -> Effect:
     return MockKeyloggerEffect(context=context, bus=bus)
