@@ -209,9 +209,30 @@ class MainWindow(QMainWindow):
         """Bind the default keyboard shortcuts to effects."""
 
         self._effects.bind_key(Qt.Key_F1, "fake_bsod")
+        self._effects.bind_key(Qt.Key_F2, "force_close")
         self._effects.bind_key(Qt.Key_F3, "popup_storm")
+        self._effects.bind_key(Qt.Key_F4, "fake_exfil")
         self._effects.bind_key(Qt.Key_F5, "mock_keylogger")
-        self._effects.bind_key(Qt.Key_F6, "matrix_rain")
+        self._effects.bind_key(Qt.Key_F6, "key_swap")
+        self._effects.bind_key(Qt.Key_F7, "invert_screen")
+        self._effects.bind_key(Qt.Key_F8, "high_contrast")
+        self._effects.bind_key(Qt.Key_F9, "mouse_gremlin")
+        self._effects.bind_key(Qt.Key_F10, "matrix_shader")
+        self._effects.bind_key(Qt.Key_F11, "fake_locker")
+        self._effects.bind_key(Qt.Key_F12, "uac_mirage")
+        self._effects.bind_key(Qt.Key_AsciiTilde, "terminal_storm")
+        self._effects.bind_key(Qt.Key_1, "net_outage")
+        self._effects.bind_key(Qt.Key_2, "disk_full")
+        self._effects.bind_key(Qt.Key_3, "cpu_heater")
+        self._effects.bind_key(Qt.Key_4, "lag_spike")
+        self._effects.bind_key(Qt.Key_5, "typer_gremlin")
+        self._effects.bind_key(Qt.Key_6, "caps_roulette")
+        self._effects.bind_key(Qt.Key_7, "window_wobble")
+        self._effects.bind_key(Qt.Key_8, "ascii_snow")
+        self._effects.bind_key(Qt.Key_9, "fake_update")
+        self._effects.bind_key(Qt.Key_0, "shame_bell")
+        self._effects.bind_key("CTRL+ALT+B", "ctrl_alt_b_briefing")
+        self._effects.bind_key("CTRL+ALT+K", "ctrl_alt_k_ethics")
 
 
 def create_application(
