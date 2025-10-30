@@ -1,11 +1,13 @@
 """Core Qt application scaffolding for Chaos Keyboard."""
 from __future__ import annotations
 
+import sys
 from typing import Tuple
 
 from . import DEFAULT_MODE, ensure_sim_only_mode
 from .bus import EventBus, SystemAction
 from .effects import EffectController
+from .logging import TelemetryLogger
 from .safety import SafetyContext
 
 try:  # pragma: no cover - import side effect
@@ -102,7 +104,12 @@ class ModeStatusBar(QStatusBar):
 class MainWindow(QMainWindow):
     """Primary application window for the Chaos Keyboard UI."""
 
-    def __init__(self, mode: str = DEFAULT_MODE, event_bus: EventBus | None = None) -> None:
+    def __init__(
+        self,
+        mode: str = DEFAULT_MODE,
+        event_bus: EventBus | None = None,
+        telemetry: TelemetryLogger | None = None,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("Chaos Keyboard")
         self.resize(1024, 768)
@@ -110,7 +117,12 @@ class MainWindow(QMainWindow):
         self._mode = ensure_sim_only_mode(mode)
         self._event_bus = event_bus or EventBus()
         self._safety_context = SafetyContext(self._mode)
-        self._effects = EffectController(self._safety_context, self._event_bus)
+        self._telemetry = telemetry or TelemetryLogger(pretty_stream=sys.stdout)
+        self._effects = EffectController(
+            self._safety_context,
+            self._event_bus,
+            telemetry=self._telemetry,
+        )
         self._bind_default_effects()
 
         central = QWidget(self)
@@ -148,7 +160,11 @@ class MainWindow(QMainWindow):
         self._mode = ensure_sim_only_mode(mode)
         self._effects.close()
         self._safety_context = SafetyContext(self._mode)
-        self._effects = EffectController(self._safety_context, self._event_bus)
+        self._effects = EffectController(
+            self._safety_context,
+            self._event_bus,
+            telemetry=self._telemetry,
+        )
         self._bind_default_effects()
         status = self.statusBar()
         if isinstance(status, ModeStatusBar):
@@ -157,6 +173,17 @@ class MainWindow(QMainWindow):
     def keyPressEvent(self, event: QKeyEvent) -> None:  # pragma: no cover - Qt integration
         """Publish key press events to the event bus before default handling."""
 
+        if self._telemetry is not None:
+            payload = {
+                "key": event.key(),
+                "text": event.text(),
+                "modifiers": int(event.modifiers()),
+            }
+            self._telemetry.log(
+                "key_press",
+                payload=payload,
+                redact_fields={"text"},
+            )
         if self._event_bus is not None:
             action = SystemAction(
                 name="key_press",
@@ -174,6 +201,8 @@ class MainWindow(QMainWindow):
         """Ensure effects are stopped before closing the window."""
 
         self._effects.close()
+        if self._telemetry is not None:
+            self._telemetry.log("window_closed", payload={"mode": self._mode})
         super().closeEvent(event)
 
     def _bind_default_effects(self) -> None:
@@ -186,7 +215,10 @@ class MainWindow(QMainWindow):
 
 
 def create_application(
-    mode: str | None = None, event_bus: EventBus | None = None
+    mode: str | None = None,
+    event_bus: EventBus | None = None,
+    *,
+    telemetry: TelemetryLogger | None = None,
 ) -> Tuple[QApplication, MainWindow]:
     """Create the Qt application and the main window."""
 
@@ -195,7 +227,11 @@ def create_application(
         app = QApplication(["ChaosKeyboard"])
 
     bus = event_bus or EventBus()
-    window = MainWindow(mode or DEFAULT_MODE, event_bus=bus)
+    window = MainWindow(
+        mode or DEFAULT_MODE,
+        event_bus=bus,
+        telemetry=telemetry,
+    )
     return app, window
 
 
