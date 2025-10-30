@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, FrozenSet, Iterable, Protocol, Sequence
+from typing import Callable, ClassVar, Dict, FrozenSet, Iterable, Mapping, Protocol, Sequence
 
 from ..bus import EffectAction, EventBus, SystemAction
 from ..logging import TelemetryLogger
@@ -231,13 +231,18 @@ class EffectController:
             self._watchdog_unsubscribe()
             self._watchdog_unsubscribe = None
 
+    _MODIFIER_FLAGS: ClassVar[tuple[tuple[int, str], ...]] = (
+        (0x02000000, "SHIFT"),
+        (0x04000000, "CTRL"),
+        (0x08000000, "ALT"),
+        (0x10000000, "META"),
+    )
+
     def _on_system_action(self, action: SystemAction) -> None:
         if action.name != "key_press":
             return
-        payload = action.payload or {}
-        for candidate in (payload.get("key"), payload.get("text")):
-            if candidate is None:
-                continue
+        payload: Mapping[str, object] = action.payload or {}
+        for candidate in self._derive_key_candidates(payload):
             normalised = self._normalise_key(candidate)
             effect_name = self._key_bindings.get(normalised)
             if effect_name is None:
@@ -260,9 +265,73 @@ class EffectController:
             return str(key)
         return str(numeric)
 
+    def _derive_key_candidates(self, payload: Mapping[str, object]) -> Sequence[object]:
+        combos: list[object] = []
+        combo = payload.get("combo")
+        if combo:
+            combos.append(combo)
+        modifiers = payload.get("modifiers")
+        base = payload.get("text") or payload.get("key")
+        combo_string = self._format_combo(modifiers, base)
+        if combo_string is not None:
+            combos.append(combo_string)
+        key_candidate = payload.get("key")
+        text_candidate = payload.get("text")
+        if key_candidate is not None:
+            combos.append(key_candidate)
+        if text_candidate is not None:
+            combos.append(text_candidate)
+        return tuple(combos)
+
+    def _format_combo(self, modifiers: object, base: object) -> str | None:
+        if not modifiers:
+            return None
+        try:
+            modifier_value = int(modifiers)
+        except (TypeError, ValueError):
+            return None
+        names = [name for flag, name in self._MODIFIER_FLAGS if modifier_value & flag]
+        if not names:
+            return None
+        key_part: str | None
+        if isinstance(base, str):
+            key_part = base.strip().upper() or None
+        elif isinstance(base, int) and 32 <= base <= 126:
+            key_part = chr(base).upper()
+        elif base is None:
+            key_part = None
+        else:
+            key_part = str(base)
+        if not key_part:
+            return None
+        names.append(key_part)
+        return "+".join(names)
+
 
 # Import built-in effects so they register with the global registry.
+from . import ascii_snow as _ascii_snow  # noqa: E402,F401
+from . import caps_roulette as _caps_roulette  # noqa: E402,F401
+from . import cpu_heater as _cpu_heater  # noqa: E402,F401
+from . import ctrl_alt_b_briefing as _ctrl_alt_b_briefing  # noqa: E402,F401
+from . import ctrl_alt_k_ethics as _ctrl_alt_k_ethics  # noqa: E402,F401
+from . import disk_full as _disk_full  # noqa: E402,F401
 from . import fake_bsod as _fake_bsod  # noqa: E402,F401
+from . import fake_exfil as _fake_exfil  # noqa: E402,F401
+from . import fake_locker as _fake_locker  # noqa: E402,F401
+from . import fake_update as _fake_update  # noqa: E402,F401
+from . import force_close as _force_close  # noqa: E402,F401
+from . import high_contrast as _high_contrast  # noqa: E402,F401
+from . import invert_screen as _invert_screen  # noqa: E402,F401
+from . import key_swap as _key_swap  # noqa: E402,F401
+from . import lag_spike as _lag_spike  # noqa: E402,F401
 from . import matrix_rain as _matrix_rain  # noqa: E402,F401
+from . import matrix_shader as _matrix_shader  # noqa: E402,F401
 from . import mock_keylogger as _mock_keylogger  # noqa: E402,F401
+from . import mouse_gremlin as _mouse_gremlin  # noqa: E402,F401
+from . import net_outage as _net_outage  # noqa: E402,F401
 from . import popup_storm as _popup_storm  # noqa: E402,F401
+from . import shame_bell as _shame_bell  # noqa: E402,F401
+from . import terminal_storm as _terminal_storm  # noqa: E402,F401
+from . import typer_gremlin as _typer_gremlin  # noqa: E402,F401
+from . import uac_mirage as _uac_mirage  # noqa: E402,F401
+from . import window_wobble as _window_wobble  # noqa: E402,F401
