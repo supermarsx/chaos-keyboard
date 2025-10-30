@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, FrozenSet, Iterable, Protocol, Sequence
 
 from ..bus import EffectAction, EventBus, SystemAction
+from ..logging import TelemetryLogger
 from ..safety import CapabilityNotAllowed, SafetyContext
 
 __all__ = [
@@ -120,12 +121,19 @@ def register_effect(
 class EffectController:
     """Coordinate effect lifecycle in response to bus actions."""
 
-    def __init__(self, context: SafetyContext, bus: EventBus) -> None:
+    def __init__(
+        self,
+        context: SafetyContext,
+        bus: EventBus,
+        *,
+        telemetry: TelemetryLogger | None = None,
+    ) -> None:
         self._context = context
         self._bus = bus
         self._key_bindings: Dict[str, str] = {}
         self._instances: Dict[str, Effect] = {}
         self._active: set[str] = set()
+        self._telemetry = telemetry
         self._system_unsubscribe: Callable[[], None] | None = bus.subscribe(
             SystemAction, self._on_system_action
         )
@@ -173,6 +181,11 @@ class EffectController:
         origin = source if source is not None else ""
         self._bus.publish(EffectAction(key=origin, effect=key))
         self._bus.publish(SystemAction(name="effect_started", payload={"effect": key}))
+        if self._telemetry is not None:
+            payload = {"effect": key}
+            if origin:
+                payload["source"] = origin
+            self._telemetry.log("effect_started", payload=payload)
 
     def stop_effect(self, name: str) -> None:
         """Stop a running effect if active."""
@@ -187,6 +200,8 @@ class EffectController:
         effect.stop()
         self._active.discard(key)
         self._bus.publish(SystemAction(name="effect_stopped", payload={"effect": key}))
+        if self._telemetry is not None:
+            self._telemetry.log("effect_stopped", payload={"effect": key})
 
     def toggle_effect(self, name: str, *, source: str | None = None) -> None:
         """Toggle an effect on or off."""
@@ -199,8 +214,11 @@ class EffectController:
     def stop_all(self) -> None:
         """Stop all running effects."""
 
-        for effect_name in list(self._active):
+        stopped = list(self._active)
+        for effect_name in stopped:
             self.stop_effect(effect_name)
+        if self._telemetry is not None:
+            self._telemetry.log("all_effects_stopped", payload={"count": len(stopped)})
 
     def close(self) -> None:
         """Release subscriptions and stop all effects."""
