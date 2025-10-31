@@ -6,7 +6,7 @@ from typing import Callable, ClassVar, Dict, FrozenSet, Iterable, Mapping, Proto
 
 from ..bus import EffectAction, EventBus, SystemAction
 from ..logging import TelemetryLogger
-from ..safety import CapabilityNotAllowed, SafetyContext
+from ..safety import CapabilityNotAllowed, InterlockPending, SafetyContext
 
 __all__ = [
     "Effect",
@@ -173,6 +173,25 @@ class EffectController:
             registry.capabilities(key) if effect is None else effect.capabilities
         )
         self._context.require_capabilities(required_capabilities)
+        if self._context.interlocks.requires_disruptive_workflow(key):
+            try:
+                self._context.ensure_disruptive_interlocks(key)
+            except InterlockPending as exc:
+                self._bus.publish(
+                    SystemAction(
+                        name="safety_interlock_prompt",
+                        payload={
+                            "effect": key,
+                            "pending_steps": list(exc.pending_steps),
+                            "hold_to_arm_required": self._context.interlocks.requires_hold_to_arm(
+                                key
+                            ),
+                            "double_confirm_required": True,
+                            "hold_duration": self._context.interlocks.hold_to_arm_duration,
+                        },
+                    )
+                )
+                raise
         if effect is None:
             effect = registry.load(key, self._context, self._bus)
             self._instances[key] = effect
@@ -198,6 +217,8 @@ class EffectController:
             self._active.discard(key)
             return
         effect.stop()
+        if self._context.interlocks.requires_disruptive_workflow(key):
+            self._context.interlocks.release_disruptive_effect(key)
         self._active.discard(key)
         self._bus.publish(SystemAction(name="effect_stopped", payload={"effect": key}))
         if self._telemetry is not None:
@@ -253,6 +274,10 @@ class EffectController:
                 # Propagate but ensure we do not leave the effect flagged active
                 self._active.discard(effect_name)
                 raise
+            except InterlockPending:
+                # Interlock prompts are emitted via the bus; do not propagate the error.
+                self._active.discard(effect_name)
+                break
             break
 
     @staticmethod

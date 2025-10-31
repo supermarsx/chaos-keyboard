@@ -2,11 +2,18 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from threading import Event, Lock
 from time import perf_counter
-from typing import Callable, FrozenSet, Iterable, MutableSequence, Sequence
+from typing import (
+    Callable,
+    FrozenSet,
+    Iterable,
+    MutableMapping,
+    MutableSequence,
+    Sequence,
+)
 
 __all__ = [
     "RuntimeMode",
@@ -19,6 +26,7 @@ __all__ = [
     "SafetyInterlocks",
     "SafetyWatchdog",
     "SafetyContext",
+    "InterlockPending",
     "normalize_mode",
 ]
 
@@ -75,12 +83,53 @@ class CapabilityNotAllowed(SafetyError):
     """Raised when an effect declares a capability not permitted in the mode."""
 
 
+class InterlockPending(SafetyError):
+    """Raised when an effect requires additional operator confirmations."""
+
+    def __init__(self, effect: str, pending_steps: Sequence[str]) -> None:
+        self.effect = effect
+        self.pending_steps: tuple[str, ...] = tuple(pending_steps)
+        description = ", ".join(self.pending_steps) or "unknown steps"
+        super().__init__(
+            f"Effect '{effect}' cannot start until interlock steps complete: {description}."
+        )
+
+
+@dataclass(slots=True)
+class _DisruptiveInterlockState:
+    """Track confirmation and hold state for disruptive effects."""
+
+    require_double_confirm: bool = False
+    confirmations: int = 0
+    require_hold: bool = False
+    hold_armed: bool = False
+    hold_started_at: float | None = None
+    active: bool = False
+
+    def pending_steps(self, *, hold_duration: float) -> tuple[str, ...]:
+        pending: list[str] = []
+        if self.require_double_confirm and self.confirmations < 2:
+            pending.append("double_confirm")
+        if self.require_hold and not self.hold_armed:
+            pending.append("hold_to_arm")
+        return tuple(pending)
+
+    def is_ready(self, *, hold_duration: float) -> bool:
+        return not self.pending_steps(hold_duration=hold_duration)
+
+
 @dataclass
 class SafetyInterlocks:
     """Track operator-controlled interlocks for potentially dangerous modes."""
 
     lab_authorised: bool = False
     lab_token: str | None = None
+    disruptive_effects: FrozenSet[str] = frozenset({"fake_bsod", "fake_locker"})
+    hold_to_arm_effects: FrozenSet[str] = frozenset({"fake_bsod", "fake_locker"})
+    hold_to_arm_duration: float = 1.5
+    _disruptive_states: MutableMapping[str, _DisruptiveInterlockState] = field(
+        default_factory=dict
+    )
 
     def arm_lab_mode(self, token: str) -> None:
         """Enable lab mode access once the operator provides a token."""
@@ -95,6 +144,7 @@ class SafetyInterlocks:
 
         self.lab_authorised = False
         self.lab_token = None
+        self._disruptive_states.clear()
 
     def ensure_mode_allowed(self, mode: RuntimeMode) -> None:
         """Validate whether the requested mode can be activated."""
@@ -103,6 +153,90 @@ class SafetyInterlocks:
             raise SafetyError(
                 "LAB mode requires operator authorisation; default builds remain in SIM ONLY."
             )
+
+    def requires_disruptive_workflow(self, effect: str) -> bool:
+        """Return ``True`` when ``effect`` requires disruptive confirmations."""
+
+        return effect.strip().lower() in self.disruptive_effects
+
+    def requires_hold_to_arm(self, effect: str) -> bool:
+        """Return ``True`` if ``effect`` must satisfy hold-to-arm."""
+
+        return effect.strip().lower() in self.hold_to_arm_effects
+
+    def ensure_disruptive_interlocks(self, effect: str) -> None:
+        """Raise when ``effect`` is not yet cleared for disruptive activation."""
+
+        key = effect.strip().lower()
+        if not self.requires_disruptive_workflow(key):
+            return
+        state = self._disruptive_states.setdefault(key, _DisruptiveInterlockState())
+        state.require_double_confirm = True
+        if self.requires_hold_to_arm(key):
+            state.require_hold = True
+        pending = state.pending_steps(hold_duration=self.hold_to_arm_duration)
+        if pending:
+            raise InterlockPending(key, pending)
+        state.active = True
+
+    def record_disruptive_confirmation(self, effect: str) -> tuple[str, ...]:
+        """Record an operator confirmation for ``effect`` and return remaining steps."""
+
+        key = effect.strip().lower()
+        state = self._disruptive_states.setdefault(key, _DisruptiveInterlockState())
+        state.require_double_confirm = True
+        state.confirmations += 1
+        return state.pending_steps(hold_duration=self.hold_to_arm_duration)
+
+    def begin_hold_to_arm(self, effect: str) -> None:
+        """Begin tracking a hold-to-arm interaction for ``effect``."""
+
+        key = effect.strip().lower()
+        state = self._disruptive_states.setdefault(key, _DisruptiveInterlockState())
+        state.require_hold = True
+        state.hold_started_at = perf_counter()
+        state.hold_armed = False
+
+    def complete_hold_to_arm(self, effect: str) -> bool:
+        """Complete the hold-to-arm step and return whether it satisfied duration."""
+
+        key = effect.strip().lower()
+        state = self._disruptive_states.setdefault(key, _DisruptiveInterlockState())
+        state.require_hold = True
+        start = state.hold_started_at
+        if start is None:
+            raise SafetyError("Hold-to-arm was not initiated for this effect.")
+        elapsed = perf_counter() - start
+        state.hold_started_at = None
+        state.hold_armed = elapsed >= self.hold_to_arm_duration
+        return state.hold_armed
+
+    def cancel_hold_to_arm(self, effect: str) -> None:
+        """Abort an in-flight hold-to-arm interaction for ``effect``."""
+
+        key = effect.strip().lower()
+        state = self._disruptive_states.get(key)
+        if state is None:
+            return
+        state.hold_started_at = None
+        state.hold_armed = False
+
+    def pending_disruptive_steps(self, effect: str) -> tuple[str, ...]:
+        """Return outstanding steps before ``effect`` may activate."""
+
+        key = effect.strip().lower()
+        state = self._disruptive_states.setdefault(key, _DisruptiveInterlockState())
+        if self.requires_disruptive_workflow(key):
+            state.require_double_confirm = True
+        if self.requires_hold_to_arm(key):
+            state.require_hold = True
+        return state.pending_steps(hold_duration=self.hold_to_arm_duration)
+
+    def release_disruptive_effect(self, effect: str) -> None:
+        """Reset interlock state once ``effect`` stops running."""
+
+        key = effect.strip().lower()
+        self._disruptive_states.pop(key, None)
 
 
 class SafetyWatchdog:
@@ -243,6 +377,26 @@ class SafetyContext:
         """Return the interlock configuration backing this context."""
 
         return self._interlocks
+
+    def ensure_disruptive_interlocks(self, effect: str) -> None:
+        """Ensure disruptive interlocks are satisfied before activation."""
+
+        self._interlocks.ensure_disruptive_interlocks(effect)
+
+    def record_disruptive_confirmation(self, effect: str) -> tuple[str, ...]:
+        """Record one operator confirmation for ``effect``."""
+
+        return self._interlocks.record_disruptive_confirmation(effect)
+
+    def begin_hold_to_arm(self, effect: str) -> None:
+        """Mark that the operator started holding the arm control for ``effect``."""
+
+        self._interlocks.begin_hold_to_arm(effect)
+
+    def complete_hold_to_arm(self, effect: str) -> bool:
+        """Complete the hold-to-arm interaction for ``effect``."""
+
+        return self._interlocks.complete_hold_to_arm(effect)
 
     def allows(self, capability: str) -> bool:
         """Return ``True`` if ``capability`` is permitted in this mode."""
