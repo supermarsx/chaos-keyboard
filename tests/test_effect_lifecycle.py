@@ -7,7 +7,13 @@ import pytest
 
 from chaos_keyboard.bus import EventBus, SystemAction, VisualAction
 from chaos_keyboard.effects import EffectController, register_effect, registry
-from chaos_keyboard.safety import CapabilityNotAllowed, SafetyContext, SIM_ONLY
+from chaos_keyboard.safety import (
+    CapabilityNotAllowed,
+    InterlockPending,
+    SafetyContext,
+    SafetyInterlocks,
+    SIM_ONLY,
+)
 
 
 @dataclass(frozen=True)
@@ -72,14 +78,6 @@ EFFECT_CASES = (
         capabilities={"overlay"},
         start_visual_contains="Matrix shader engaged",
         stop_visual_contains="Matrix shader disabled",
-    ),
-    EffectExpectation(
-        name="fake_locker",
-        capabilities={"overlay", "ui"},
-        start_visual_contains="Fake locker engaged",
-        stop_visual_contains="Fake locker dismissed",
-        start_system=("modal_control", "show_lock_screen"),
-        stop_system=("modal_control", "hide_lock_screen"),
     ),
     EffectExpectation(
         name="uac_mirage",
@@ -192,17 +190,23 @@ EFFECT_CASES = (
 @pytest.fixture()
 def controller() -> tuple[EffectController, EventBus, SafetyContext]:
     bus = EventBus()
-    context = SafetyContext(mode=SIM_ONLY)
+    interlocks = SafetyInterlocks(hold_to_arm_duration=0.0)
+    context = SafetyContext(mode=SIM_ONLY, interlocks=interlocks)
     ctrl = EffectController(context, bus)
     return ctrl, bus, context
 
 
 def test_fake_bsod_toggle(controller: tuple[EffectController, EventBus, SafetyContext]) -> None:
-    ctrl, bus, _ = controller
+    ctrl, bus, context = controller
     ctrl.bind_key("F1", "fake_bsod")
 
     visuals: list[VisualAction] = []
     bus.subscribe(VisualAction, visuals.append)
+
+    context.record_disruptive_confirmation("fake_bsod")
+    context.record_disruptive_confirmation("fake_bsod")
+    context.begin_hold_to_arm("fake_bsod")
+    assert context.complete_hold_to_arm("fake_bsod")
 
     bus.publish(SystemAction(name="key_press", payload={"text": "F1"}))
     assert "fake_bsod" in ctrl.active_effects
@@ -267,6 +271,40 @@ def test_mock_keylogger_captures_keystrokes(
     # Additional keypresses after stop must not be captured.
     bus.publish(SystemAction(name="key_press", payload={"text": "!"}))
     assert "!" not in effect.status()
+
+
+def test_disruptive_effect_prompts_and_allows_after_interlocks(
+    controller: tuple[EffectController, EventBus, SafetyContext]
+) -> None:
+    ctrl, bus, context = controller
+    prompts: list[SystemAction] = []
+    bus.subscribe(SystemAction, prompts.append)
+
+    with pytest.raises(InterlockPending):
+        ctrl.start_effect("fake_bsod")
+
+    prompt_actions = [
+        action
+        for action in prompts
+        if action.name == "safety_interlock_prompt"
+        and (action.payload or {}).get("effect") == "fake_bsod"
+    ]
+    assert prompt_actions
+    payload = prompt_actions[-1].payload or {}
+    assert "double_confirm" in payload.get("pending_steps", [])
+    assert payload.get("hold_to_arm_required") is True
+
+    context.record_disruptive_confirmation("fake_bsod")
+    context.record_disruptive_confirmation("fake_bsod")
+    context.begin_hold_to_arm("fake_bsod")
+    assert context.complete_hold_to_arm("fake_bsod")
+
+    ctrl.start_effect("fake_bsod")
+    assert "fake_bsod" in ctrl.active_effects
+    ctrl.stop_effect("fake_bsod")
+
+    with pytest.raises(InterlockPending):
+        ctrl.start_effect("fake_bsod")
 
 
 @pytest.mark.parametrize("case", EFFECT_CASES)
@@ -350,8 +388,33 @@ def test_panic_stops_all_effects(
 ) -> None:
     ctrl, bus, context = controller
     ctrl.bind_key("F1", "fake_bsod")
+    context.record_disruptive_confirmation("fake_bsod")
+    context.record_disruptive_confirmation("fake_bsod")
+    context.begin_hold_to_arm("fake_bsod")
+    assert context.complete_hold_to_arm("fake_bsod")
     bus.publish(SystemAction(name="key_press", payload={"text": "F1"}))
     assert ctrl.active_effects
 
     context.panic()
     assert not ctrl.active_effects
+
+
+def test_fake_locker_requires_interlock_reset(
+    controller: tuple[EffectController, EventBus, SafetyContext]
+) -> None:
+    ctrl, _, context = controller
+
+    with pytest.raises(InterlockPending):
+        ctrl.start_effect("fake_locker")
+
+    context.record_disruptive_confirmation("fake_locker")
+    context.record_disruptive_confirmation("fake_locker")
+    context.begin_hold_to_arm("fake_locker")
+    assert context.complete_hold_to_arm("fake_locker")
+
+    ctrl.start_effect("fake_locker")
+    assert "fake_locker" in ctrl.active_effects
+    ctrl.stop_effect("fake_locker")
+
+    with pytest.raises(InterlockPending):
+        ctrl.start_effect("fake_locker")

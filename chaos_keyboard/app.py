@@ -19,6 +19,7 @@ try:  # pragma: no cover - import side effect
         QGridLayout,
         QLabel,
         QMainWindow,
+        QPushButton,
         QSizePolicy,
         QSplitter,
         QStatusBar,
@@ -86,6 +87,9 @@ class ModeStatusBar(QStatusBar):
         self.mode_label = QLabel("Mode: --")
         self.fps_label = QLabel("FPS: --")
         self.effects_label = QLabel("Effects: none")
+        self.panic_button = QPushButton("PANIC")
+        self.panic_button.setObjectName("panic_button")
+        self.panic_button.setToolTip("Immediately stop all effects (Ctrl+.)")
 
         for widget, name in (
             (self.mode_label, "mode"),
@@ -94,6 +98,7 @@ class ModeStatusBar(QStatusBar):
         ):
             widget.setObjectName(f"status_{name}")
             self.addPermanentWidget(widget)
+        self.addPermanentWidget(self.panic_button)
 
     def update_mode(self, mode: str) -> None:
         """Update the prominent mode indicator."""
@@ -141,6 +146,7 @@ class MainWindow(QMainWindow):
         status_bar = ModeStatusBar(self)
         self.setStatusBar(status_bar)
         status_bar.update_mode(self._mode)
+        status_bar.panic_button.clicked.connect(self._on_panic_button)  # type: ignore[attr-defined]
 
     @property
     def mode(self) -> str:
@@ -173,6 +179,9 @@ class MainWindow(QMainWindow):
     def keyPressEvent(self, event: QKeyEvent) -> None:  # pragma: no cover - Qt integration
         """Publish key press events to the event bus before default handling."""
 
+        is_panic_shortcut = bool(
+            event.modifiers() & Qt.ControlModifier and event.key() == Qt.Key_Period
+        )
         if self._telemetry is not None:
             payload = {
                 "key": event.key(),
@@ -184,7 +193,7 @@ class MainWindow(QMainWindow):
                 payload=payload,
                 redact_fields={"text"},
             )
-        if self._event_bus is not None:
+        if not is_panic_shortcut and self._event_bus is not None:
             action = SystemAction(
                 name="key_press",
                 payload={
@@ -195,6 +204,11 @@ class MainWindow(QMainWindow):
             )
             self._event_bus.publish(action)
 
+        if is_panic_shortcut:
+            self._trigger_panic(source="shortcut")
+            event.accept()
+            return
+
         super().keyPressEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # pragma: no cover - Qt integration
@@ -204,6 +218,25 @@ class MainWindow(QMainWindow):
         if self._telemetry is not None:
             self._telemetry.log("window_closed", payload={"mode": self._mode})
         super().closeEvent(event)
+
+    def _on_panic_button(self) -> None:  # pragma: no cover - Qt integration
+        self._trigger_panic(source="button")
+
+    def _trigger_panic(self, *, source: str) -> None:
+        """Invoke the global panic stop and log watchdog status."""
+
+        self._safety_context.panic()
+        if self._telemetry is None:
+            return
+        watchdog = self._safety_context.watchdog
+        self._telemetry.log(
+            "panic_triggered",
+            payload={
+                "source": source,
+                "max_stop_duration": watchdog.max_stop_duration,
+                "completed_within_threshold": watchdog.wait_for_panic(timeout=0.0),
+            },
+        )
 
     def _bind_default_effects(self) -> None:
         """Bind the default keyboard shortcuts to effects."""

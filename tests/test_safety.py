@@ -14,6 +14,7 @@ import pytest
 
 from chaos_keyboard.safety import (  # noqa: E402  - local import for tests
     CapabilityNotAllowed,
+    InterlockPending,
     SafetyContext,
     SafetyError,
     SafetyInterlocks,
@@ -114,3 +115,51 @@ def test_wait_for_panic_accounts_for_callback_runtime() -> None:
 
     # The watchdog should report that the panic exceeded its configured duration.
     assert elapsed >= 0.05
+
+
+def test_disruptive_interlock_requires_double_confirm_and_hold() -> None:
+    interlocks = SafetyInterlocks(hold_to_arm_duration=0.01)
+
+    with pytest.raises(InterlockPending):
+        interlocks.ensure_disruptive_interlocks("fake_bsod")
+
+    pending = interlocks.record_disruptive_confirmation("fake_bsod")
+    assert "double_confirm" in pending
+
+    with pytest.raises(InterlockPending):
+        interlocks.ensure_disruptive_interlocks("fake_bsod")
+
+    remaining = interlocks.record_disruptive_confirmation("fake_bsod")
+    assert "hold_to_arm" in remaining
+
+    interlocks.begin_hold_to_arm("fake_bsod")
+    time.sleep(0.02)
+    assert interlocks.complete_hold_to_arm("fake_bsod")
+
+    interlocks.ensure_disruptive_interlocks("fake_bsod")
+
+    interlocks.release_disruptive_effect("fake_bsod")
+    reset_steps = interlocks.pending_disruptive_steps("fake_bsod")
+    assert "double_confirm" in reset_steps and "hold_to_arm" in reset_steps
+
+
+def test_hold_to_arm_requires_begin() -> None:
+    interlocks = SafetyInterlocks()
+
+    with pytest.raises(SafetyError):
+        interlocks.complete_hold_to_arm("fake_locker")
+
+
+def test_safety_context_helpers_forward_to_interlocks() -> None:
+    interlocks = SafetyInterlocks(hold_to_arm_duration=0.0)
+    context = SafetyContext(mode="sim only", interlocks=interlocks)
+
+    with pytest.raises(InterlockPending):
+        context.ensure_disruptive_interlocks("fake_locker")
+
+    context.record_disruptive_confirmation("fake_locker")
+    context.record_disruptive_confirmation("fake_locker")
+    context.begin_hold_to_arm("fake_locker")
+    assert context.complete_hold_to_arm("fake_locker")
+
+    context.ensure_disruptive_interlocks("fake_locker")
