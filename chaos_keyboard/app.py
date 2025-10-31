@@ -5,13 +5,15 @@ import sys
 from typing import Tuple
 
 from . import DEFAULT_MODE, ensure_sim_only_mode
-from .bus import EventBus, SystemAction
+from .bus import EventBus, SystemAction, VisualAction
+from .console import ConsoleBuffer
 from .effects import EffectController
 from .logging import TelemetryLogger
 from .safety import SafetyContext
+from .status import StatusIndicators
 
 try:  # pragma: no cover - import side effect
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import Qt, QTimer
     from PySide6.QtGui import QCloseEvent, QKeyEvent
     from PySide6.QtWidgets import (
         QApplication,
@@ -19,8 +21,10 @@ try:  # pragma: no cover - import side effect
         QGridLayout,
         QLabel,
         QMainWindow,
+        QPlainTextEdit,
         QPushButton,
         QSizePolicy,
+        QScrollBar,
         QSplitter,
         QStatusBar,
         QVBoxLayout,
@@ -52,37 +56,101 @@ class KeyboardGrid(QFrame):
 
 
 class CrackConsolePanel(QFrame):
-    """Placeholder widget for the animated Crack Console view."""
+    """Animated console view subscribing to visual bus events."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    TICK_INTERVAL_MS = 32
+
+    def __init__(
+        self,
+        bus: EventBus,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("crackConsole")
         self.setFrameShape(QFrame.StyledPanel)
         self.setFrameShadow(QFrame.Sunken)
+        self.setStyleSheet(
+            "#crackConsole {"
+            "background-color: #050810;"
+            "border: 2px solid #14422e;"
+            "color: #39ff14;"
+            "}"
+        )
+
+        self._bus = bus
+        self._buffer = ConsoleBuffer()
+        self._unsubscribe = bus.subscribe(VisualAction, self._on_visual_action)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
 
-        header = QLabel("Crack Console")
+        header = QLabel("CRACK CONSOLE")
         header.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        header.setStyleSheet("font-weight: bold; text-transform: uppercase;")
-
-        body = QLabel(
-            "Console output placeholder.\n"
-            "Future versions will stream faux assembly logs and hex dumps."
+        header.setObjectName("crackConsoleHeader")
+        header.setStyleSheet(
+            "#crackConsoleHeader {"
+            "font-weight: 700;"
+            "letter-spacing: 2px;"
+            "color: #6bff5c;"
+            "}"
         )
-        body.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        body.setWordWrap(True)
-        body.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        self._text_area = QPlainTextEdit(self)
+        self._text_area.setObjectName("crackConsoleText")
+        self._text_area.setReadOnly(True)
+        self._text_area.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self._text_area.setFrameStyle(QFrame.NoFrame)
+        self._text_area.setStyleSheet(
+            "#crackConsoleText {"
+            "background-color: #050810;"
+            "color: #39ff14;"
+            "font-family: 'Fira Code', 'Source Code Pro', monospace;"
+            "font-size: 12pt;"
+            "padding: 6px;"
+            "selection-background-color: #245f3e;"
+            "selection-color: #e6ffe6;"
+            "}"
+        )
 
         layout.addWidget(header)
-        layout.addWidget(body)
+        layout.addWidget(self._text_area, stretch=1)
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._on_tick)  # type: ignore[attr-defined]
+
+    def _on_visual_action(self, action: VisualAction) -> None:
+        self._buffer.handle_visual_action(action)
+        if not self._timer.isActive():
+            self._timer.start(self.TICK_INTERVAL_MS)
+
+    def _on_tick(self) -> None:
+        if not self._buffer.step():
+            if self._buffer.idle:
+                self._timer.stop()
+            return
+        self._render()
+
+    def _render(self) -> None:
+        lines = "\n".join(self._buffer.render_lines())
+        self._text_area.setPlainText(lines)
+        scrollbar: QScrollBar | None = self._text_area.verticalScrollBar()
+        if scrollbar is not None:
+            scrollbar.setValue(scrollbar.maximum())
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # pragma: no cover - Qt integration
+        if self._timer.isActive():
+            self._timer.stop()
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+        super().closeEvent(event)
 
 
 class ModeStatusBar(QStatusBar):
     """Status bar tracking the current runtime mode and state chips."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, bus: EventBus, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.mode_label = QLabel("Mode: --")
         self.fps_label = QLabel("FPS: --")
@@ -90,6 +158,11 @@ class ModeStatusBar(QStatusBar):
         self.panic_button = QPushButton("PANIC")
         self.panic_button.setObjectName("panic_button")
         self.panic_button.setToolTip("Immediately stop all effects (Ctrl+.)")
+
+        self._bus = bus
+        self._indicators = StatusIndicators()
+        self._unsubscribe = bus.subscribe(SystemAction, self._on_system_action)
+        self.destroyed.connect(self._teardown)  # type: ignore[attr-defined]
 
         for widget, name in (
             (self.mode_label, "mode"),
@@ -99,11 +172,25 @@ class ModeStatusBar(QStatusBar):
             widget.setObjectName(f"status_{name}")
             self.addPermanentWidget(widget)
         self.addPermanentWidget(self.panic_button)
+        self._refresh_labels()
 
     def update_mode(self, mode: str) -> None:
         """Update the prominent mode indicator."""
 
         self.mode_label.setText(f"Mode: {mode}")
+
+    def _on_system_action(self, action: SystemAction) -> None:
+        if self._indicators.handle_system_action(action):
+            self._refresh_labels()
+
+    def _refresh_labels(self) -> None:
+        self.fps_label.setText(self._indicators.fps_chip())
+        self.effects_label.setText(self._indicators.effects_chip())
+
+    def _teardown(self) -> None:
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
 
 
 class MainWindow(QMainWindow):
@@ -136,14 +223,14 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter(Qt.Vertical, central)
         splitter.addWidget(KeyboardGrid(splitter))
-        splitter.addWidget(CrackConsolePanel(splitter))
+        splitter.addWidget(CrackConsolePanel(self._event_bus, splitter))
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
 
         central_layout.addWidget(splitter)
         self.setCentralWidget(central)
 
-        status_bar = ModeStatusBar(self)
+        status_bar = ModeStatusBar(self._event_bus, self)
         self.setStatusBar(status_bar)
         status_bar.update_mode(self._mode)
         status_bar.panic_button.clicked.connect(self._on_panic_button)  # type: ignore[attr-defined]
