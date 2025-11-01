@@ -73,6 +73,9 @@ class PluginSandbox:
             sandboxed_builtins = dict(vars(builtins_obj))
         sandboxed_builtins["__import__"] = import_function
         module.__dict__["__builtins__"] = sandboxed_builtins
+        module_name = module.__dict__.get("__name__")
+        if isinstance(module_name, str):
+            self._sandboxed_modules.add(module_name)
 
     def activate_persistent_guard(self) -> None:
         """Keep the sandbox import guard active for the plugin lifetime."""
@@ -85,6 +88,34 @@ class PluginSandbox:
             return
         self._install_import_guard()
         self._persistent_guard = True
+
+    def register_plugin_root(self, root: Path) -> Path | None:
+        """Remember the plugin's filesystem root for call-site detection."""
+
+        if self.developer_mode_enabled or self._developer_flag_is_set():
+            return None
+
+        resolved = root.resolve()
+        self._sandbox_roots.add(resolved)
+        return resolved
+
+    def unregister_plugin_root(self, root: Path) -> None:
+        """Remove a plugin root after a failed import."""
+
+        self._sandbox_roots.discard(root)
+
+    def track_module_name(self, module_name: str) -> None:
+        """Record plugin module names that should remain sandboxed."""
+
+        if self.developer_mode_enabled or self._developer_flag_is_set():
+            return
+
+        self._sandboxed_modules.add(module_name)
+
+    def untrack_module_name(self, module_name: str) -> None:
+        """Remove a module from sandbox tracking after a failed import."""
+
+        self._sandboxed_modules.discard(module_name)
 
     def _ensure_import_function(self) -> Callable[..., ModuleType]:
         if self._sandboxed_import is None:
@@ -101,14 +132,17 @@ class PluginSandbox:
             ) -> ModuleType:
                 if self.developer_mode_enabled or self._developer_flag_is_set():
                     return original_import(name, globals, locals, fromlist, level)
-                root = name.split(".", 1)[0]
-                if root in blocked:
-                    raise ImportError(
-                        (
-                            f"Import of '{root}' is disabled for Chaos Keyboard plugins. "
-                            f"Set {flag_name}=1 to opt into developer mode."
+
+                if self._should_enforce_for_call(globals):
+                    root = name.split(".", 1)[0]
+                    if root in blocked:
+                        raise ImportError(
+                            (
+                                f"Import of '{root}' is disabled for Chaos Keyboard plugins. "
+                                f"Set {flag_name}=1 to opt into developer mode."
+                            )
                         )
-                    )
+
                 return original_import(name, globals, locals, fromlist, level)
 
             self._sandboxed_import = sandboxed_import
@@ -140,12 +174,51 @@ class PluginSandbox:
         flag_value = os.environ.get(self.developer_flag, "")
         return flag_value.strip().lower() in self._TRUTHY_VALUES
 
+    def _should_enforce_for_call(
+        self, globals_dict: dict[str, object] | None
+    ) -> bool:
+        if globals_dict:
+            module_name = globals_dict.get("__name__")
+            if isinstance(module_name, str) and module_name in self._sandboxed_modules:
+                return True
+            module_file = globals_dict.get("__file__")
+            if isinstance(module_file, str) and self._is_sandbox_path(module_file):
+                return True
+
+        try:
+            frame = sys._getframe(1)
+        except ValueError:
+            return False
+        while frame:
+            module_name = frame.f_globals.get("__name__")
+            if isinstance(module_name, str) and module_name in self._sandboxed_modules:
+                return True
+            module_file = frame.f_globals.get("__file__")
+            if isinstance(module_file, str) and self._is_sandbox_path(module_file):
+                return True
+            frame = frame.f_back
+
+        return False
+
+    def _is_sandbox_path(self, file_path: str) -> bool:
+        candidate = Path(file_path).resolve()
+        for root in self._sandbox_roots:
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                continue
+            else:
+                return True
+        return False
+
     _original_import: Callable[..., ModuleType] | None = field(default=None, init=False, repr=False)
     _sandboxed_import: Callable[..., ModuleType] | None = field(
         default=None, init=False, repr=False
     )
     _guard_depth: int = field(default=0, init=False, repr=False)
     _persistent_guard: bool = field(default=False, init=False, repr=False)
+    _sandboxed_modules: set[str] = field(default_factory=set, init=False, repr=False)
+    _sandbox_roots: set[Path] = field(default_factory=set, init=False, repr=False)
     _TRUTHY_VALUES: ClassVar[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 
 
@@ -296,11 +369,17 @@ def _load_plugin_module(
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
 
+    registered_root = sandbox.register_plugin_root(package_path)
+    sandbox.track_module_name(module_name)
+
     try:
         with sandbox.guard_imports():
             spec.loader.exec_module(module)
     except Exception:
         sys.modules.pop(module_name, None)
+        sandbox.untrack_module_name(module_name)
+        if registered_root is not None:
+            sandbox.unregister_plugin_root(registered_root)
         raise
     else:
         sandbox.bind_module_imports(module)
