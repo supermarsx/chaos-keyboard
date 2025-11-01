@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import sys
-from typing import Tuple
+from typing import ClassVar, Tuple
 
 from . import DEFAULT_MODE, ensure_sim_only_mode
 from .bus import EventBus, SystemAction, VisualAction
+from .config import ConfigError, ProfileConfig, active_profile, profile_payload
 from .console import ConsoleBuffer
 from .effects import EffectController
 from .logging import TelemetryLogger
@@ -196,9 +197,39 @@ class ModeStatusBar(QStatusBar):
 class MainWindow(QMainWindow):
     """Primary application window for the Chaos Keyboard UI."""
 
+    _DEFAULT_EFFECT_BINDINGS: ClassVar[tuple[tuple[object, str], ...]] = (
+        (Qt.Key_F1, "fake_bsod"),
+        (Qt.Key_F2, "force_close"),
+        (Qt.Key_F3, "popup_storm"),
+        (Qt.Key_F4, "fake_exfil"),
+        (Qt.Key_F5, "mock_keylogger"),
+        (Qt.Key_F6, "key_swap"),
+        (Qt.Key_F7, "invert_screen"),
+        (Qt.Key_F8, "high_contrast"),
+        (Qt.Key_F9, "mouse_gremlin"),
+        (Qt.Key_F10, "matrix_shader"),
+        (Qt.Key_F11, "fake_locker"),
+        (Qt.Key_F12, "uac_mirage"),
+        (Qt.Key_AsciiTilde, "terminal_storm"),
+        (Qt.Key_1, "net_outage"),
+        (Qt.Key_2, "disk_full"),
+        (Qt.Key_3, "cpu_heater"),
+        (Qt.Key_4, "lag_spike"),
+        (Qt.Key_5, "typer_gremlin"),
+        (Qt.Key_6, "caps_roulette"),
+        (Qt.Key_7, "window_wobble"),
+        (Qt.Key_8, "ascii_snow"),
+        (Qt.Key_9, "fake_update"),
+        (Qt.Key_0, "shame_bell"),
+        ("CTRL+ALT+B", "ctrl_alt_b_briefing"),
+        ("CTRL+ALT+K", "ctrl_alt_k_ethics"),
+    )
+
     def __init__(
         self,
         mode: str = DEFAULT_MODE,
+        *,
+        profile: ProfileConfig | None = None,
         event_bus: EventBus | None = None,
         telemetry: TelemetryLogger | None = None,
     ) -> None:
@@ -206,6 +237,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Chaos Keyboard")
         self.resize(1024, 768)
 
+        self._profile = self._resolve_profile(profile)
         self._mode = ensure_sim_only_mode(mode)
         self._event_bus = event_bus or EventBus()
         self._safety_context = SafetyContext(self._mode)
@@ -214,6 +246,22 @@ class MainWindow(QMainWindow):
             self._safety_context,
             self._event_bus,
             telemetry=self._telemetry,
+        )
+        self._effect_allowlist = (
+            frozenset(effect.strip().lower() for effect in self._profile.effects.enabled)
+            if self._profile is not None
+            else None
+        )
+        self._skin = self._profile.ui.skin if self._profile is not None else "crt"
+        self._scanlines_enabled = (
+            self._profile.ui.scanlines if self._profile is not None else True
+        )
+        self._audio_enabled = (
+            self._profile.audio.enabled if self._profile is not None else True
+        )
+        self._limits = self._profile.limits if self._profile is not None else None
+        self._start_fullscreen = (
+            self._profile.ui.fullscreen if self._profile is not None else False
         )
         self._bind_default_effects()
 
@@ -234,6 +282,55 @@ class MainWindow(QMainWindow):
         self.setStatusBar(status_bar)
         status_bar.update_mode(self._mode)
         status_bar.panic_button.clicked.connect(self._on_panic_button)  # type: ignore[attr-defined]
+
+        self._apply_profile_configuration()
+
+    def _resolve_profile(self, profile: ProfileConfig | None) -> ProfileConfig | None:
+        if profile is not None:
+            return profile
+        try:
+            return active_profile()
+        except ConfigError:
+            return None
+
+    def _apply_profile_configuration(self) -> None:
+        self._bind_default_effects()
+        if self._profile is None:
+            return
+        self.setProperty("skin", self._skin)
+        self.setProperty("scanlines", self._scanlines_enabled)
+        audio_payload = {
+            "enabled": self._audio_enabled,
+            "music": self._profile.audio.music,
+            "sfx": self._profile.audio.sfx,
+        }
+        self._event_bus.publish(SystemAction(name="audio_state", payload=audio_payload))
+        self._event_bus.publish(
+            SystemAction(
+                name="limits_applied",
+                payload={
+                    "max_popups": self._limits.max_popups if self._limits else None,
+                    "cpu_ms": self._limits.cpu_ms if self._limits else None,
+                },
+            )
+        )
+        self._event_bus.publish(
+            VisualAction(
+                target="ui_skin",
+                description=(
+                    f"Skin set to {self._skin} with"
+                    f" scanlines={'on' if self._scanlines_enabled else 'off'}."
+                ),
+            )
+        )
+        self._event_bus.publish(
+            SystemAction(name="profile_applied", payload=profile_payload(self._profile))
+        )
+        if self._telemetry is not None:
+            self._telemetry.log(
+                "profile_loaded",
+                payload=profile_payload(self._profile),
+            )
 
     @property
     def mode(self) -> str:
@@ -328,37 +425,19 @@ class MainWindow(QMainWindow):
     def _bind_default_effects(self) -> None:
         """Bind the default keyboard shortcuts to effects."""
 
-        self._effects.bind_key(Qt.Key_F1, "fake_bsod")
-        self._effects.bind_key(Qt.Key_F2, "force_close")
-        self._effects.bind_key(Qt.Key_F3, "popup_storm")
-        self._effects.bind_key(Qt.Key_F4, "fake_exfil")
-        self._effects.bind_key(Qt.Key_F5, "mock_keylogger")
-        self._effects.bind_key(Qt.Key_F6, "key_swap")
-        self._effects.bind_key(Qt.Key_F7, "invert_screen")
-        self._effects.bind_key(Qt.Key_F8, "high_contrast")
-        self._effects.bind_key(Qt.Key_F9, "mouse_gremlin")
-        self._effects.bind_key(Qt.Key_F10, "matrix_shader")
-        self._effects.bind_key(Qt.Key_F11, "fake_locker")
-        self._effects.bind_key(Qt.Key_F12, "uac_mirage")
-        self._effects.bind_key(Qt.Key_AsciiTilde, "terminal_storm")
-        self._effects.bind_key(Qt.Key_1, "net_outage")
-        self._effects.bind_key(Qt.Key_2, "disk_full")
-        self._effects.bind_key(Qt.Key_3, "cpu_heater")
-        self._effects.bind_key(Qt.Key_4, "lag_spike")
-        self._effects.bind_key(Qt.Key_5, "typer_gremlin")
-        self._effects.bind_key(Qt.Key_6, "caps_roulette")
-        self._effects.bind_key(Qt.Key_7, "window_wobble")
-        self._effects.bind_key(Qt.Key_8, "ascii_snow")
-        self._effects.bind_key(Qt.Key_9, "fake_update")
-        self._effects.bind_key(Qt.Key_0, "shame_bell")
-        self._effects.bind_key("CTRL+ALT+B", "ctrl_alt_b_briefing")
-        self._effects.bind_key("CTRL+ALT+K", "ctrl_alt_k_ethics")
+        allowlist = self._effect_allowlist
+        for key, effect_name in self._DEFAULT_EFFECT_BINDINGS:
+            self._effects.unbind_key(key)
+            if allowlist is not None and effect_name not in allowlist:
+                continue
+            self._effects.bind_key(key, effect_name)
 
 
 def create_application(
     mode: str | None = None,
     event_bus: EventBus | None = None,
     *,
+    profile: ProfileConfig | None = None,
     telemetry: TelemetryLogger | None = None,
 ) -> Tuple[QApplication, MainWindow]:
     """Create the Qt application and the main window."""
@@ -370,15 +449,19 @@ def create_application(
     bus = event_bus or EventBus()
     window = MainWindow(
         mode or DEFAULT_MODE,
+        profile=profile,
         event_bus=bus,
         telemetry=telemetry,
     )
     return app, window
 
 
-def main(mode: str | None = None) -> int:
+def main(mode: str | None = None, *, profile: ProfileConfig | None = None) -> int:
     """Launch the Qt application and start the event loop."""
 
-    app, window = create_application(mode)
-    window.show()
+    app, window = create_application(mode, profile=profile)
+    if profile is not None and profile.ui.fullscreen:
+        window.showFullScreen()
+    else:
+        window.show()
     return app.exec()
