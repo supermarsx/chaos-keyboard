@@ -1,0 +1,25 @@
+[profiles.default.ui]
+skin = "crt"
+scanlines = true
+fullscreen = false
+
+[profiles.default.audio]
+enabled = true
+music = true
+sfx = true
+
+[profiles.default.safety]
+mode = "sim_only"
+
+[profiles.default.effects]
+enabled = [
+  "fake_bsod",
+  "popup_storm",
+  "matrix_shader",
+  "fake_exfil",
+  "mock_keylogger",
+]
+
+[profiles.default.limits]
+max_popups = 48
+cpu_ms = 250
