@@ -46,7 +46,7 @@ class PluginSandbox:
     def guard_imports(self) -> Iterator[None]:
         """Temporarily wrap ``__import__`` to block dangerous modules."""
 
-        if self.developer_mode_enabled or self._developer_flag_is_set():
+        if self.developer_mode_enabled:
             yield
             return
 
@@ -59,7 +59,7 @@ class PluginSandbox:
     def bind_module_imports(self, module: ModuleType) -> None:
         """Ensure a plugin module retains the sandboxed ``__import__``."""
 
-        if self.developer_mode_enabled or self._developer_flag_is_set():
+        if self.developer_mode_enabled:
             return
 
         import_function = self._ensure_import_function()
@@ -80,11 +80,7 @@ class PluginSandbox:
     def activate_persistent_guard(self) -> None:
         """Keep the sandbox import guard active for the plugin lifetime."""
 
-        if (
-            self.developer_mode_enabled
-            or self._developer_flag_is_set()
-            or self._persistent_guard
-        ):
+        if self.developer_mode_enabled or self._persistent_guard:
             return
         self._install_import_guard()
         self._persistent_guard = True
@@ -92,7 +88,7 @@ class PluginSandbox:
     def register_plugin_root(self, root: Path) -> Path | None:
         """Remember the plugin's filesystem root for call-site detection."""
 
-        if self.developer_mode_enabled or self._developer_flag_is_set():
+        if self.developer_mode_enabled:
             return None
 
         resolved = root.resolve()
@@ -107,7 +103,7 @@ class PluginSandbox:
     def track_module_name(self, module_name: str) -> None:
         """Record plugin module names that should remain sandboxed."""
 
-        if self.developer_mode_enabled or self._developer_flag_is_set():
+        if self.developer_mode_enabled:
             return
 
         self._sandboxed_modules.add(module_name)
@@ -130,7 +126,7 @@ class PluginSandbox:
                 fromlist: Sequence[str] = (),
                 level: int = 0,
             ) -> ModuleType:
-                if self.developer_mode_enabled or self._developer_flag_is_set():
+                if self.developer_mode_enabled:
                     return original_import(name, globals, locals, fromlist, level)
 
                 if self._should_enforce_for_call(globals):
@@ -157,11 +153,7 @@ class PluginSandbox:
         self._guard_depth += 1
 
     def _release_import_guard(self) -> None:
-        if (
-            self.developer_mode_enabled
-            or self._developer_flag_is_set()
-            or self._guard_depth == 0
-        ):
+        if self.developer_mode_enabled or self._guard_depth == 0:
             return
         if self._persistent_guard and self._guard_depth == 1:
             return
