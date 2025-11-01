@@ -1,6 +1,7 @@
 """Effect system and registry for Chaos Keyboard."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Callable, ClassVar, Dict, FrozenSet, Iterable, Mapping, Protocol, Sequence
 
@@ -13,9 +14,16 @@ __all__ = [
     "EffectFactory",
     "EffectRegistry",
     "EffectController",
+    "PluginApp",
+    "PluginLoadError",
+    "PluginSandbox",
     "register_effect",
     "registry",
+    "load_effect_plugins",
 ]
+
+
+_logger = logging.getLogger(__name__)
 
 
 class Effect(Protocol):
@@ -360,3 +368,14 @@ from . import terminal_storm as _terminal_storm  # noqa: E402,F401
 from . import typer_gremlin as _typer_gremlin  # noqa: E402,F401
 from . import uac_mirage as _uac_mirage  # noqa: E402,F401
 from . import window_wobble as _window_wobble  # noqa: E402,F401
+from .plugins import PluginApp, PluginLoadError, PluginSandbox, load_effect_plugins
+
+try:
+    _LOADED_PLUGINS = load_effect_plugins()
+except PluginLoadError as exc:  # pragma: no cover - logging side effect only
+    _logger.warning("Failed to load effect plugins: %s", exc)
+else:  # pragma: no cover - informational logging
+    if _LOADED_PLUGINS:
+        joined = ", ".join(sorted(_LOADED_PLUGINS))
+        _logger.info("Loaded effect plugins: %s", joined)
+
