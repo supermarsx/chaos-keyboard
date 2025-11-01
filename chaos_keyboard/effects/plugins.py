@@ -171,7 +171,8 @@ def load_effect_plugins(
                 f"Plugin '{candidate.name}' does not define register(app)."
             )
         try:
-            register(app)
+            with sandbox.guard_imports():
+                register(app)
         except Exception as exc:  # pragma: no cover - surfaced to caller.
             raise PluginLoadError(
                 f"Plugin '{candidate.name}' raised during registration: {exc}"
