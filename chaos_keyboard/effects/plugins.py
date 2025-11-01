@@ -6,10 +6,10 @@ import importlib.util
 import os
 import sys
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Callable, Iterable, Iterator, Sequence
+from typing import TYPE_CHECKING, Callable, ClassVar, Iterable, Iterator, Sequence
 
 __all__ = [
     "PluginApp",
@@ -33,13 +33,7 @@ class PluginSandbox:
 
     def __post_init__(self) -> None:
         if self.developer_mode is None:
-            flag_value = os.environ.get(self.developer_flag, "")
-            self.developer_mode = flag_value.strip().lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
+            self.developer_mode = self._developer_flag_is_set()
         self.blocked_modules = frozenset(self.blocked_modules)
 
     @property
@@ -52,36 +46,107 @@ class PluginSandbox:
     def guard_imports(self) -> Iterator[None]:
         """Temporarily wrap ``__import__`` to block dangerous modules."""
 
-        if self.developer_mode_enabled:
+        if self.developer_mode_enabled or self._developer_flag_is_set():
             yield
             return
 
-        original_import = builtins.__import__
-        blocked = self.blocked_modules
-        flag_name = self.developer_flag
-
-        def sandboxed_import(
-            name: str,
-            globals: dict[str, object] | None = None,
-            locals: dict[str, object] | None = None,
-            fromlist: Sequence[str] = (),
-            level: int = 0,
-        ) -> ModuleType:
-            root = name.split(".", 1)[0]
-            if root in blocked:
-                raise ImportError(
-                    (
-                        f"Import of '{root}' is disabled for Chaos Keyboard plugins. "
-                        f"Set {flag_name}=1 to opt into developer mode."
-                    )
-                )
-            return original_import(name, globals, locals, fromlist, level)
-
-        builtins.__import__ = sandboxed_import
+        self._install_import_guard()
         try:
             yield
         finally:
-            builtins.__import__ = original_import
+            self._release_import_guard()
+
+    def bind_module_imports(self, module: ModuleType) -> None:
+        """Ensure a plugin module retains the sandboxed ``__import__``."""
+
+        if self.developer_mode_enabled or self._developer_flag_is_set():
+            return
+
+        import_function = self._ensure_import_function()
+
+        builtins_obj = module.__dict__.get("__builtins__")
+        if isinstance(builtins_obj, dict):
+            sandboxed_builtins = dict(builtins_obj)
+        elif builtins_obj is None:
+            sandboxed_builtins = dict(vars(builtins))
+        else:
+            sandboxed_builtins = dict(vars(builtins_obj))
+        sandboxed_builtins["__import__"] = import_function
+        module.__dict__["__builtins__"] = sandboxed_builtins
+
+    def activate_persistent_guard(self) -> None:
+        """Keep the sandbox import guard active for the plugin lifetime."""
+
+        if (
+            self.developer_mode_enabled
+            or self._developer_flag_is_set()
+            or self._persistent_guard
+        ):
+            return
+        self._install_import_guard()
+        self._persistent_guard = True
+
+    def _ensure_import_function(self) -> Callable[..., ModuleType]:
+        if self._sandboxed_import is None:
+            original_import = builtins.__import__
+            blocked = self.blocked_modules
+            flag_name = self.developer_flag
+
+            def sandboxed_import(
+                name: str,
+                globals: dict[str, object] | None = None,
+                locals: dict[str, object] | None = None,
+                fromlist: Sequence[str] = (),
+                level: int = 0,
+            ) -> ModuleType:
+                if self.developer_mode_enabled or self._developer_flag_is_set():
+                    return original_import(name, globals, locals, fromlist, level)
+                root = name.split(".", 1)[0]
+                if root in blocked:
+                    raise ImportError(
+                        (
+                            f"Import of '{root}' is disabled for Chaos Keyboard plugins. "
+                            f"Set {flag_name}=1 to opt into developer mode."
+                        )
+                    )
+                return original_import(name, globals, locals, fromlist, level)
+
+            self._sandboxed_import = sandboxed_import
+        return self._sandboxed_import
+
+    def _install_import_guard(self) -> None:
+        if self.developer_mode_enabled:
+            return
+        if self._guard_depth == 0:
+            self._original_import = builtins.__import__
+            builtins.__import__ = self._ensure_import_function()
+        self._guard_depth += 1
+
+    def _release_import_guard(self) -> None:
+        if (
+            self.developer_mode_enabled
+            or self._developer_flag_is_set()
+            or self._guard_depth == 0
+        ):
+            return
+        if self._persistent_guard and self._guard_depth == 1:
+            return
+        self._guard_depth -= 1
+        if self._guard_depth == 0 and self._original_import is not None:
+            builtins.__import__ = self._original_import
+            self._original_import = None
+
+    def _developer_flag_is_set(self) -> bool:
+        flag_value = os.environ.get(self.developer_flag, "")
+        return flag_value.strip().lower() in self._TRUTHY_VALUES
+
+    _original_import: Callable[..., ModuleType] | None = field(default=None, init=False, repr=False)
+    _sandboxed_import: Callable[..., ModuleType] | None = field(
+        default=None, init=False, repr=False
+    )
+    _guard_depth: int = field(default=0, init=False, repr=False)
+    _persistent_guard: bool = field(default=False, init=False, repr=False)
+    _TRUTHY_VALUES: ClassVar[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 
 
 @dataclass(slots=True)
@@ -237,6 +302,9 @@ def _load_plugin_module(
     except Exception:
         sys.modules.pop(module_name, None)
         raise
+    else:
+        sandbox.bind_module_imports(module)
+        sandbox.activate_persistent_guard()
     return module
 
 

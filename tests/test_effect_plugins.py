@@ -82,6 +82,47 @@ def register(app) -> None:
         load_effect_plugins(base_path=tmp_path, registry=registry, sandbox=sandbox)
 
 
+def test_sandbox_blocks_runtime_imports(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "runtime"
+    plugin_dir.mkdir()
+    (plugin_dir / "effect.py").write_text(
+        """
+from __future__ import annotations
+
+
+class RuntimeImport:
+    name = "runtime_import"
+    capabilities = frozenset()
+
+    def __init__(self, context, bus) -> None:
+        self._running = False
+
+    def start(self) -> None:
+        import subprocess  # noqa: F401 - used to trigger sandbox
+
+    def stop(self) -> None:
+        self._running = False
+
+    def status(self) -> str:
+        return "running" if self._running else "idle"
+
+
+def register(app) -> None:
+    app.register_factory(
+        "runtime_import",
+        lambda context, bus: RuntimeImport(context, bus),
+        capabilities=RuntimeImport.capabilities,
+    )
+"""
+    )
+    registry = EffectRegistry(_factories={}, _capabilities={})
+    sandbox = PluginSandbox(developer_mode=False)
+    load_effect_plugins(base_path=tmp_path, registry=registry, sandbox=sandbox)
+    effect = registry.load("runtime_import", SafetyContext(mode=SIM_ONLY), EventBus())
+    with pytest.raises(ImportError):
+        effect.start()
+
+
 def test_developer_flag_allows_blocked_modules(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
