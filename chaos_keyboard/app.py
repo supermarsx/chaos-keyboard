@@ -5,6 +5,7 @@ import sys
 from typing import Callable, ClassVar, Tuple
 
 from . import DEFAULT_MODE, ensure_sim_only_mode
+from .audio import AudioManager
 from .bus import EventBus, SystemAction, VisualAction
 from .config import ConfigError, ProfileConfig, active_profile, profile_payload
 from .console import ConsoleBuffer
@@ -311,6 +312,7 @@ class MainWindow(QMainWindow):
         self._profile = self._resolve_profile(profile)
         self._mode = ensure_sim_only_mode(mode)
         self._event_bus = event_bus or EventBus()
+        self._audio = AudioManager(self._event_bus)
         self._safety_context = SafetyContext(self._mode)
         self._telemetry = telemetry or TelemetryLogger(pretty_stream=sys.stdout)
         self._effects = EffectController(
@@ -482,6 +484,7 @@ class MainWindow(QMainWindow):
         """Ensure effects are stopped before closing the window."""
 
         self._effects.close()
+        self._audio.close()
         if self._telemetry is not None:
             self._telemetry.log("window_closed", payload={"mode": self._mode})
         super().closeEvent(event)
