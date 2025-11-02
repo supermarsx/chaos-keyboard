@@ -12,6 +12,7 @@ from .effects import EffectController
 from .logging import TelemetryLogger
 from .safety import SafetyContext
 from .status import StatusIndicators
+from .ui import KeyboardPanel
 
 try:  # pragma: no cover - import side effect
     from PySide6.QtCore import Qt, QTimer
@@ -19,12 +20,10 @@ try:  # pragma: no cover - import side effect
     from PySide6.QtWidgets import (
         QApplication,
         QFrame,
-        QGridLayout,
         QLabel,
         QMainWindow,
         QPlainTextEdit,
         QPushButton,
-        QSizePolicy,
         QScrollBar,
         QSplitter,
         QStatusBar,
@@ -35,25 +34,6 @@ except ModuleNotFoundError as exc:  # pragma: no cover - handled at runtime
     raise ModuleNotFoundError(
         "PySide6 must be installed to run the Chaos Keyboard UI."
     ) from exc
-
-
-class KeyboardGrid(QFrame):
-    """Placeholder widget representing the retro keyboard layout."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("keyboardGrid")
-        self.setFrameShape(QFrame.StyledPanel)
-        self.setFrameShadow(QFrame.Raised)
-
-        layout = QGridLayout(self)
-        layout.setSpacing(6)
-        layout.setContentsMargins(12, 12, 12, 12)
-
-        label = QLabel("Keyboard Grid\n(placeholder)")
-        label.setAlignment(Qt.AlignCenter)
-        label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        layout.addWidget(label, 0, 0)
 
 
 class CrackConsolePanel(QFrame):
@@ -270,7 +250,12 @@ class MainWindow(QMainWindow):
         central_layout.setContentsMargins(0, 0, 0, 0)
 
         splitter = QSplitter(Qt.Vertical, central)
-        splitter.addWidget(KeyboardGrid(splitter))
+        keyboard_panel = KeyboardPanel(
+            self._event_bus,
+            self._DEFAULT_EFFECT_BINDINGS,
+            parent=splitter,
+        )
+        splitter.addWidget(keyboard_panel)
         splitter.addWidget(CrackConsolePanel(self._event_bus, splitter))
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
