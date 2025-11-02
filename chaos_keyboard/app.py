@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import sys
-from typing import ClassVar, Tuple
+from typing import Callable, ClassVar, Tuple
 
 from . import DEFAULT_MODE, ensure_sim_only_mode
 from .bus import EventBus, SystemAction, VisualAction
@@ -10,8 +10,8 @@ from .config import ConfigError, ProfileConfig, active_profile, profile_payload
 from .console import ConsoleBuffer
 from .effects import EffectController
 from .logging import TelemetryLogger
-from .safety import SafetyContext
-from .status import StatusIndicators
+from .safety import RuntimeMode, SafetyContext
+from .status import ChipMeta, StatusIndicators
 try:  # pragma: no cover - import side effect
     from PySide6.QtCore import Qt, QTimer
     from PySide6.QtGui import QCloseEvent, QKeyEvent
@@ -132,9 +132,66 @@ class ModeStatusBar(QStatusBar):
 
     def __init__(self, bus: EventBus, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.mode_label = QLabel("Mode: --")
-        self.fps_label = QLabel("FPS: --")
-        self.effects_label = QLabel("Effects: none")
+        self.setObjectName("modeStatusBar")
+        self.setSizeGripEnabled(False)
+        self.setContentsMargins(12, 2, 12, 2)
+        self.setStyleSheet(
+            "QStatusBar {"
+            "background-color: #050b12;"
+            "color: #e2f2ff;"
+            "font-family: 'Fira Code', 'Source Code Pro', monospace;"
+            "}"
+            "QStatusBar QLabel[chip='true'] {"
+            "border-radius: 10px;"
+            "padding: 2px 10px;"
+            "margin: 0 6px;"
+            "border: 1px solid rgba(111, 193, 255, 0.35);"
+            "background-color: #0f1e2e;"
+            "color: #bfe6ff;"
+            "font-weight: 600;"
+            "letter-spacing: 1px;"
+            "text-transform: uppercase;"
+            "}"
+            "QStatusBar QLabel[chipState='mode-sim'] {"
+            "background-color: #123524;"
+            "border-color: rgba(138, 255, 193, 0.5);"
+            "color: #8affc1;"
+            "}"
+            "QStatusBar QLabel[chipState='mode-stream'] {"
+            "background-color: #0a2740;"
+            "border-color: rgba(102, 178, 255, 0.45);"
+            "color: #9cd6ff;"
+            "}"
+            "QStatusBar QLabel[chipState='mode-lab'] {"
+            "background-color: #3b0d0d;"
+            "border-color: rgba(255, 105, 97, 0.55);"
+            "color: #ff9e9a;"
+            "}"
+            "QStatusBar QLabel[chipState='effects-active'] {"
+            "background-color: #1d2a42;"
+            "border-color: rgba(191, 230, 255, 0.5);"
+            "color: #d7f0ff;"
+            "}"
+            "QStatusBar QLabel[chipState='effects-idle'] {"
+            "background-color: #101924;"
+            "border-color: rgba(111, 193, 255, 0.25);"
+            "color: #7da9c5;"
+            "}"
+            "QStatusBar QLabel[chipState='fps-active'] {"
+            "background-color: #1c2f25;"
+            "border-color: rgba(138, 255, 193, 0.45);"
+            "color: #aefed0;"
+            "}"
+            "QStatusBar QLabel[chipState='fps-idle'] {"
+            "background-color: #0f1e2e;"
+            "border-color: rgba(111, 193, 255, 0.25);"
+            "color: #7da9c5;"
+            "}"
+        )
+
+        self.mode_label = QLabel()
+        self.fps_label = QLabel()
+        self.effects_label = QLabel()
         self.panic_button = QPushButton("PANIC")
         self.panic_button.setObjectName("panic_button")
         self.panic_button.setToolTip("Immediately stop all effects (Ctrl+.)")
@@ -142,6 +199,8 @@ class ModeStatusBar(QStatusBar):
         self._bus = bus
         self._indicators = StatusIndicators()
         self._unsubscribe = bus.subscribe(SystemAction, self._on_system_action)
+        self._safety_context: SafetyContext | None = None
+        self._panic_unsubscribe: Callable[[], None] | None = None
         self.destroyed.connect(self._teardown)  # type: ignore[attr-defined]
 
         for widget, name in (
@@ -150,27 +209,60 @@ class ModeStatusBar(QStatusBar):
             (self.effects_label, "effects"),
         ):
             widget.setObjectName(f"status_{name}")
+            widget.setAlignment(Qt.AlignCenter)
+            widget.setProperty("chip", True)
             self.addPermanentWidget(widget)
         self.addPermanentWidget(self.panic_button)
         self._refresh_labels()
 
-    def update_mode(self, mode: str) -> None:
+    def bind_safety_context(self, context: SafetyContext) -> None:
+        """Attach to a safety context to receive mode and panic updates."""
+
+        if self._panic_unsubscribe is not None:
+            self._panic_unsubscribe()
+            self._panic_unsubscribe = None
+        self._safety_context = context
+        self._panic_unsubscribe = context.watchdog.register(self._on_watchdog_panic)
+        self._indicators.set_mode(context.mode)
+        self._refresh_labels()
+
+    def update_mode(self, mode: str | RuntimeMode) -> None:
         """Update the prominent mode indicator."""
 
-        self.mode_label.setText(f"Mode: {mode}")
+        if self._indicators.set_mode(mode):
+            self._refresh_labels()
 
     def _on_system_action(self, action: SystemAction) -> None:
         if self._indicators.handle_system_action(action):
             self._refresh_labels()
 
     def _refresh_labels(self) -> None:
-        self.fps_label.setText(self._indicators.fps_chip())
-        self.effects_label.setText(self._indicators.effects_chip())
+        self._apply_chip(self.mode_label, self._indicators.mode_chip())
+        self._apply_chip(self.fps_label, self._indicators.fps_chip())
+        self._apply_chip(self.effects_label, self._indicators.effects_chip())
+
+    def _apply_chip(self, label: QLabel, chip: ChipMeta) -> None:
+        label.setText(chip.text)
+        label.setToolTip(chip.tooltip or "")
+        label.setProperty("chipState", chip.state)
+        style = label.style()
+        if style is not None:
+            style.unpolish(label)
+            style.polish(label)
+        label.update()
+
+    def _on_watchdog_panic(self) -> None:
+        self._indicators.reset()
+        self._refresh_labels()
 
     def _teardown(self) -> None:
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None
+        if self._panic_unsubscribe is not None:
+            self._panic_unsubscribe()
+            self._panic_unsubscribe = None
+        self._safety_context = None
 
 
 class MainWindow(QMainWindow):
@@ -264,10 +356,13 @@ class MainWindow(QMainWindow):
 
         status_bar = ModeStatusBar(self._event_bus, self)
         self.setStatusBar(status_bar)
-        status_bar.update_mode(self._mode)
+        status_bar.bind_safety_context(self._safety_context)
         status_bar.panic_button.clicked.connect(self._on_panic_button)  # type: ignore[attr-defined]
 
         self._apply_profile_configuration()
+        self._event_bus.publish(
+            SystemAction(name="runtime_mode", payload={"mode": self._mode})
+        )
 
     def _resolve_profile(self, profile: ProfileConfig | None) -> ProfileConfig | None:
         if profile is not None:
@@ -342,7 +437,11 @@ class MainWindow(QMainWindow):
         self._bind_default_effects()
         status = self.statusBar()
         if isinstance(status, ModeStatusBar):
+            status.bind_safety_context(self._safety_context)
             status.update_mode(self._mode)
+        self._event_bus.publish(
+            SystemAction(name="runtime_mode", payload={"mode": self._mode})
+        )
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # pragma: no cover - Qt integration
         """Publish key press events to the event bus before default handling."""
@@ -394,6 +493,9 @@ class MainWindow(QMainWindow):
         """Invoke the global panic stop and log watchdog status."""
 
         self._safety_context.panic()
+        self._event_bus.publish(
+            SystemAction(name="panic_invoked", payload={"source": source})
+        )
         if self._telemetry is None:
             return
         watchdog = self._safety_context.watchdog
