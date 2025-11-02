@@ -12,8 +12,6 @@ from .effects import EffectController
 from .logging import TelemetryLogger
 from .safety import SafetyContext
 from .status import StatusIndicators
-from .ui import KeyboardPanel
-
 try:  # pragma: no cover - import side effect
     from PySide6.QtCore import Qt, QTimer
     from PySide6.QtGui import QCloseEvent, QKeyEvent
@@ -30,6 +28,7 @@ try:  # pragma: no cover - import side effect
         QVBoxLayout,
         QWidget,
     )
+    from .ui import KeyboardPanel
 except ModuleNotFoundError as exc:  # pragma: no cover - handled at runtime
     raise ModuleNotFoundError(
         "PySide6 must be installed to run the Chaos Keyboard UI."
