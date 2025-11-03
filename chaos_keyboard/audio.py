@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Callable, Dict, Optional, Protocol
 
 from .bus import EventBus, SystemAction
-from .assets.audio.generator import ensure_audio_assets
+from .assets.audio.generator import audio_asset_filenames, ensure_audio_assets
 
 
 class AudioBackend(Protocol):
@@ -180,7 +180,8 @@ class AudioManager:
         self._bus = bus
         self._asset_root = asset_root or Path(__file__).resolve().parent / "assets" / "audio"
         self._backend_factory = backend_factory or _detect_backend
-        ensure_audio_assets(self._asset_root)
+        if self._needs_asset_generation(self._asset_root):
+            ensure_audio_assets(self._asset_root)
         self._backend = self._backend_factory()
         self._music_enabled = True
         self._sfx_enabled = True
@@ -191,6 +192,15 @@ class AudioManager:
         self._current_music: Optional[str] = None
         self._system_unsubscribe = self._bus.subscribe(SystemAction, self._on_system_action)
         self._load_assets()
+
+    @staticmethod
+    def _needs_asset_generation(asset_root: Path) -> bool:
+        """Return ``True`` when any generated audio asset is missing."""
+
+        for filename in audio_asset_filenames():
+            if not (asset_root / filename).exists():
+                return True
+        return False
 
     def close(self) -> None:
         """Release backend resources and unsubscribe from the bus."""

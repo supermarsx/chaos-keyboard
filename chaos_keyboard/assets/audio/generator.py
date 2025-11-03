@@ -112,6 +112,12 @@ _ASSETS: tuple[AudioAsset, ...] = (
 )
 
 
+def audio_asset_filenames() -> tuple[str, ...]:
+    """Return the filenames for all generated audio assets."""
+
+    return tuple(asset.filename for asset in _ASSETS)
+
+
 def ensure_audio_assets(output_dir: Path, *, force: bool = False) -> dict[str, Path]:
     """Ensure placeholder audio assets exist under *output_dir*."""
 
