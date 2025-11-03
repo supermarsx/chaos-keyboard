@@ -8,6 +8,7 @@ from .keyboard import (
     KeyboardLayout,
     KeyboardPanel,
 )
+from .skins import SkinManager
 
 __all__ = [
     "ANSI_LAYOUT",
@@ -15,4 +16,5 @@ __all__ = [
     "KeyPlacement",
     "KeyboardLayout",
     "KeyboardPanel",
+    "SkinManager",
 ]
