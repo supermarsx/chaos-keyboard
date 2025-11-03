@@ -29,7 +29,7 @@ try:  # pragma: no cover - import side effect
         QVBoxLayout,
         QWidget,
     )
-    from .ui import KeyboardPanel
+    from .ui import KeyboardPanel, SkinManager
 except ModuleNotFoundError as exc:  # pragma: no cover - handled at runtime
     raise ModuleNotFoundError(
         "PySide6 must be installed to run the Chaos Keyboard UI."
@@ -306,12 +306,14 @@ class MainWindow(QMainWindow):
         telemetry: TelemetryLogger | None = None,
     ) -> None:
         super().__init__()
+        self.setObjectName("chaosMainWindow")
         self.setWindowTitle("Chaos Keyboard")
         self.resize(1024, 768)
 
         self._profile = self._resolve_profile(profile)
         self._mode = ensure_sim_only_mode(mode)
         self._event_bus = event_bus or EventBus()
+        self._skin_manager = SkinManager()
         self._audio = AudioManager(self._event_bus)
         self._safety_context = SafetyContext(self._mode)
         self._telemetry = telemetry or TelemetryLogger(pretty_stream=sys.stdout)
@@ -336,6 +338,7 @@ class MainWindow(QMainWindow):
         self._start_fullscreen = (
             self._profile.ui.fullscreen if self._profile is not None else False
         )
+        self._active_skin = None
         self._bind_default_effects()
 
         central = QWidget(self)
@@ -378,8 +381,12 @@ class MainWindow(QMainWindow):
         self._bind_default_effects()
         if self._profile is None:
             return
-        self.setProperty("skin", self._skin)
-        self.setProperty("scanlines", self._scanlines_enabled)
+        applied_skin = self._skin_manager.apply_skin(
+            self,
+            self._skin,
+            scanlines=self._scanlines_enabled,
+        )
+        self._active_skin = applied_skin
         audio_payload = {
             "enabled": self._audio_enabled,
             "music": self._profile.audio.music,
@@ -395,12 +402,27 @@ class MainWindow(QMainWindow):
                 },
             )
         )
+        scanline_state = "on" if self._scanlines_enabled else "off"
         self._event_bus.publish(
             VisualAction(
                 target="ui_skin",
                 description=(
-                    f"Skin set to {self._skin} with"
-                    f" scanlines={'on' if self._scanlines_enabled else 'off'}."
+                    f"{applied_skin.title} skin active"
+                    f" (scanlines {scanline_state})."
+                ),
+            )
+        )
+        shader_payload = applied_skin.shader.payload()
+        uniforms = shader_payload.get("uniforms", {})
+        formatted_uniforms = ", ".join(
+            f"{key}={value:.2f}" for key, value in uniforms.items()
+        )
+        self._event_bus.publish(
+            VisualAction(
+                target="ui_shader",
+                description=(
+                    f"Shader preset {shader_payload.get('name', 'unknown')}"
+                    f" with {formatted_uniforms or 'no uniforms'}."
                 ),
             )
         )
