@@ -5,6 +5,7 @@ import builtins
 import importlib.util
 import os
 import sys
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -172,14 +173,15 @@ class PluginSandbox:
         # Reentrancy guard: _is_sandbox_path may trigger imports (e.g.
         # ``os.path`` internals) that re-enter the sandboxed import hook.
         # While we are already deciding whether to enforce, skip the check
-        # to avoid infinite recursion.
-        if self._in_enforcement_check:
+        # to avoid infinite recursion.  Uses thread-local storage so
+        # concurrent threads are handled independently.
+        if getattr(self._thread_local, "in_check", False):
             return False
-        self._in_enforcement_check = True
+        self._thread_local.in_check = True
         try:
             return self._check_enforcement(globals_dict)
         finally:
-            self._in_enforcement_check = False
+            self._thread_local.in_check = False
 
     def _check_enforcement(
         self, globals_dict: dict[str, object] | None
@@ -226,7 +228,7 @@ class PluginSandbox:
     _persistent_guard: bool = field(default=False, init=False, repr=False)
     _sandboxed_modules: set[str] = field(default_factory=set, init=False, repr=False)
     _sandbox_roots: set[Path] = field(default_factory=set, init=False, repr=False)
-    _in_enforcement_check: bool = field(default=False, init=False, repr=False)
+    _thread_local: threading.local = field(default_factory=threading.local, init=False, repr=False)
     _resolved_root_strings: dict[Path, str] = field(default_factory=dict, init=False, repr=False)
     _TRUTHY_VALUES: ClassVar[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 
