@@ -169,6 +169,21 @@ class PluginSandbox:
     def _should_enforce_for_call(
         self, globals_dict: dict[str, object] | None
     ) -> bool:
+        # Reentrancy guard: _is_sandbox_path may trigger imports (e.g.
+        # ``os.path`` internals) that re-enter the sandboxed import hook.
+        # While we are already deciding whether to enforce, skip the check
+        # to avoid infinite recursion.
+        if self._in_enforcement_check:
+            return False
+        self._in_enforcement_check = True
+        try:
+            return self._check_enforcement(globals_dict)
+        finally:
+            self._in_enforcement_check = False
+
+    def _check_enforcement(
+        self, globals_dict: dict[str, object] | None
+    ) -> bool:
         if globals_dict:
             module_name = globals_dict.get("__name__")
             if isinstance(module_name, str) and module_name in self._sandboxed_modules:
@@ -178,7 +193,7 @@ class PluginSandbox:
                 return True
 
         try:
-            frame = sys._getframe(1)
+            frame = sys._getframe(2)
         except ValueError:
             return False
         while frame:
@@ -193,13 +208,13 @@ class PluginSandbox:
         return False
 
     def _is_sandbox_path(self, file_path: str) -> bool:
-        candidate = Path(file_path).resolve()
+        candidate = os.path.realpath(file_path)
         for root in self._sandbox_roots:
-            try:
-                candidate.relative_to(root)
-            except ValueError:
-                continue
-            else:
+            root_str = self._resolved_root_strings.get(root)
+            if root_str is None:
+                root_str = os.path.realpath(str(root))
+                self._resolved_root_strings[root] = root_str
+            if candidate == root_str or candidate.startswith(root_str + os.sep):
                 return True
         return False
 
@@ -211,6 +226,8 @@ class PluginSandbox:
     _persistent_guard: bool = field(default=False, init=False, repr=False)
     _sandboxed_modules: set[str] = field(default_factory=set, init=False, repr=False)
     _sandbox_roots: set[Path] = field(default_factory=set, init=False, repr=False)
+    _in_enforcement_check: bool = field(default=False, init=False, repr=False)
+    _resolved_root_strings: dict[Path, str] = field(default_factory=dict, init=False, repr=False)
     _TRUTHY_VALUES: ClassVar[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 
 
